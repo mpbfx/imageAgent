@@ -1,0 +1,29 @@
+# Large source binaries (paper assets — keep out of git)
+*.pdf
+*.tar
+tmp_genclaw_arxiv.html
+
+# Scratch / extracted working material
+tmp/
+tmp_genclaw_src/
+
+# Pipeline outputs
+outputs/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Playwright
+playwright-report/
+
+# Local Claude settings & OS cruft
+.claude/settings.local.json
+.DS_Store
+Thumbs.db
