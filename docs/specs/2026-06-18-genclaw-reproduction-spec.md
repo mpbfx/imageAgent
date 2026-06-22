@@ -44,6 +44,25 @@ GenClaw 将图像生成拆成三层：
    - 审查最终图像是否满足用户目标和结构化约束。
    - 迭代时优先修改结构化记录或代码，而不是只重写自然语言 prompt。
 
+## 论文机制 ↔ 本复现覆盖度（诚实声明）
+
+下表把论文声明的机制逐项对照当前实现状态，避免“声称覆盖却未实现”的失真。状态分：✅ 已实现可跑 / ◑ 已建结构化记录或 stub（机制未真正落地）/ ✗ 未实现。
+
+| 论文机制（出处） | 本复现状态 | 说明 |
+| --- | --- | --- |
+| 认知层 - 意图理解（§3.1-3.2） | ✅ | fixture（关键字）+ external LLM agent（Claude-Opus，structured-output + 重试）。 |
+| 认知层 - 搜索 / 知识接地（§3.2, Mind-Bench） | ◑→✅ 结构 | `search_node` 已在主图中、gated 运行、合并 `KnowledgeRef`（带可溯源 source）；默认 NullSearchProvider 为 no-op，真实多轮检索需配 Tavily 凭据。 |
+| 认知层 - 推理（§3.2 几何/物理先算后画） | ◑ 结构 | schema 有 `ReasoningStep`（question/conclusion/values）承载中间结论；尚无自动推理 provider 填充，需 agent/外部模型产出。 |
+| 可执行画布 - SVG（组合/计数/空间） | ✅ | 源码编译 + Playwright PNG。 |
+| 可执行画布 - HTML/CSS（长文本/海报） | ✅ | 源码编译 + Playwright PNG，精确文本保留 + 转义。 |
+| 可执行画布 - Three.js（3D 物理/视角） | ✅ | swiftshader headless WebGL 出帧截图已验证。 |
+| 可执行画布 - Python/Canvas（数值物理草图） | ✅ | Python(matplotlib 直接出图)/Canvas(2D, Playwright)；论文 §3.2 与 Three.js 并列。 |
+| code-as-brush（LLM 直接写 free-form 代码） | ✗（phase 2） | 当前为模板编译的 `structured` 来源；`code` 来源字段已在 schema 预留，编译/沙箱未实现（ADR 0003）。 |
+| 视觉生成（Gemini-Flash-Image 上色） | ◑ | 接口 + 默认 Gemini adapter 已写，未配凭据实跑；fixture 用 mock（复制 sketch，无 photorealism）。 |
+| 审查层（VLM 审查 + 可追踪诊断） | ✅ 规则 / ◑ VLM | 规则审查可跑；VLM reviewer（Claude-Opus）接口+解析已写，未配凭据实跑。 |
+| 分层编辑 + SAM3 分割 + inpainting（§3.2, ImgEdit，论文最硬定量主张 PSNR/SSIM） | ✗（phase 2） | schema 有 `EditOp` 占位；分割 provider、editing pipeline、非编辑区一致性指标均未实现。**本复现尚不能支撑该定量主张。** |
+| 官方 benchmark + official metric（GenEval++/LongText/ImgEdit/Mind-Bench） | ✗（暂缓） | 用户决定先复刻核心 pipeline，benchmark 暂缓（ADR 0004 接入方案在案）。 |
+
 ## 复现范围
 
 ### 范围内
@@ -117,9 +136,10 @@ GenClaw 将图像生成拆成三层：
 
 - SVG：用于场景组合；
 - HTML/CSS：用于长文本、海报、卡片、页面；
-- Three.js：用于简单物理或几何演示。
+- Three.js：用于 3D 物理/几何/视角演示；
+- Python（matplotlib）/ Canvas（2D）：用于数值型物理草图（弹簧、压力、浮力、几何关系），论文 §3.2 明确将其与 Three.js 并列——这类任务重点是“关系正确”而非视觉风格，code 充当“物理草稿/符号世界模型”。
 
-每种后端都必须能以固定尺寸渲染为 PNG。
+每种后端都必须能以固定尺寸渲染为 PNG（Python 后端经 matplotlib 直接出图，无需浏览器；其余经 Playwright）。
 
 ### FR3：产物可追踪
 
@@ -142,12 +162,15 @@ review 模块必须支持：
 
 系统必须用 LangGraph 实现主编排图：
 
-- `conceptualize_node`：调用 agent provider 生成 `CanvasPlan`。当任务涉及实时事件、长尾实体、地理/文化/专业知识时，先经可选 `search_node` 检索并将事实并入结构化记录（对应 Mind-Bench 的 multi-round search；第一阶段可为 stub provider，但节点和接口必须在图中预留）。
-- `render_node`：根据 `CanvasPlan.backend` 选择 SVG/HTML/Three.js renderer。
+- `conceptualize_node`：调用 agent provider 生成 `CanvasPlan`，含意图理解；论文认知层（§3.1-3.2）的另两支柱——搜索与推理——分别由下述 search_node 与计划中的 `reasoning`（`ReasoningStep`）结构化记录承载。
+- `search_node`（**已实现，gated**）：当 `task_type == knowledge_grounded` 时调用 search provider 检索事实，并入 `CanvasPlan.knowledge`（每条带可溯源 `source`），对应 Mind-Bench 的 multi-round search。默认 `NullSearchProvider`（no-op，无凭据可跑，真实存在于图中而非仅占位）；外部默认 Tavily（ADR 0004），SearXNG 为开源退路。检索失败为非致命，记录 error artifact 后继续。
+- `render_node`：根据 `CanvasPlan.backend` 选择 SVG/HTML/Three.js/Python/Canvas renderer。
 - `generate_node`：调用 image generator provider，fixture mode 使用 mock generator。
 - `review_node`：调用规则审查和可选 VLM reviewer。
 - `revise_node`：根据 review failures 修改 plan 或返回 fixture mode unsupported 信息。
 - `route_after_review`：根据 `ReviewResult.passed` 和 `revision_count` 决定结束或修正。
+
+主图节点顺序：`conceptualize → search → render → generate → review → route_after_review`，review 失败且未超上限时经 conditional edge 回到 `revise → render`。
 
 ### FR7：评测 harness
 
@@ -170,7 +193,7 @@ benchmark harness 必须能运行本地小型 fixture 集，并报告：
 
 ## 建议技术栈
 
-- Python 3.11+。
+- Python 3.10+（开发机为 64-bit 3.10.11；最初 spec 写 3.11+，因本机仅有 3.10.11 64-bit 与 3.14 32-bit，为获得 numpy/Pillow/Playwright 的稳定 wheel，下调为 3.10+）。
 - `langgraph`：agent workflow 编排、状态图和 revision loop。
 - `pydantic`：schema。
 - `typer`：CLI。

@@ -4,7 +4,7 @@
 
 **架构:** 采用 artifact-first、provider-pluggable 和 LangGraph state graph 设计。核心 schema、renderer、review 和 graph nodes 在本地确定性运行；LLM、VLM、搜索、图像生成、图像编辑、分割都通过 adapter 接入。
 
-**技术栈:** Python 3.11+、LangGraph、Pydantic、Typer、Rich、Playwright、Pillow、NumPy、pytest。
+**技术栈:** Python 3.10+（开发机为 64-bit 3.10.11）、LangGraph、Pydantic、Typer、Rich、Playwright、Pillow、NumPy、pytest。
 
 **修订说明（依据 ADR 0003 与 spec 评审）：** 本计划在原 15 任务基础上前置两项:任务 2 的 schema 必须对齐四个 benchmark 任务族(GenEval++/LongText/ImgEdit/Mind-Bench)并区分 `structured`/`code` 两类画布来源,而非围绕 3 个 fixture;任务 8(Three.js)前新增**任务 7.5 headless WebGL 渲染 spike**。任务 14 补充 prompt→`CanvasPlan` 的可靠性机制。任务 1 须锁定 langgraph/langchain 依赖版本。
 

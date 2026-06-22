@@ -27,3 +27,10 @@ playwright-report/
 .claude/settings.local.json
 .DS_Store
 Thumbs.db
+
+# Secrets / local credentials — never commit
+.env
+.env.*
+!.env.example
+.aigc_gateway.local.yaml
+*.local.yaml
