@@ -198,3 +198,24 @@ def test_code_mode_produces_code_source_plan(config):
 def test_code_mode_flag_defaults_false(config):
     agent = ScriptedAgent([_GOOD_PLAN], config=config)
     assert agent.code_mode is False
+
+
+# --- mode -> code_mode mapping (code-as-brush is the external default) --------
+
+def test_external_mode_defaults_to_code_as_brush(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-x")
+    monkeypatch.setenv("GOOGLE_API_KEY", "g-y")
+    from genclaw.pipeline import build_providers
+
+    for mode in ("external", "external-code"):
+        agent, _gen, _rev, _search = build_providers(mode)
+        assert agent.code_mode is True, mode
+
+
+def test_external_template_opts_out_of_code(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-x")
+    monkeypatch.setenv("GOOGLE_API_KEY", "g-y")
+    from genclaw.pipeline import build_providers
+
+    agent, _gen, _rev, _search = build_providers("external-template")
+    assert agent.code_mode is False

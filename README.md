@@ -92,18 +92,21 @@ TAVILY_API_KEY=...                # 多轮搜索（知识接地）
 ```bash
 pip install -e ".[providers]"
 
-# external：结构化模板 + 真实模型
+# external：默认即 CODE-AS-BRUSH —— LLM 自己写 SVG/HTML/Three.js 源码（论文核心机制）
 genclaw run --prompt "你的 prompt" --mode external
 
-# external-code：CODE-AS-BRUSH —— LLM 自己写 SVG/HTML/Three.js 源码
-genclaw run --prompt "一张极简咖啡馆菜单卡片，标题晨光咖啡，三个分区..." \
-  --mode external-code
+# external-code：external 的显式别名（同样是 code-as-brush）
+genclaw run --prompt "..." --mode external-code
+
+# external-template：结构化模板回退（不执行模型代码，确定性，可作对照基线）
+genclaw run --prompt "你的 prompt" --mode external-template
 ```
 
 默认栈对齐论文（见 ADR 0004）：Claude-Opus agent + VLM 审查、Gemini-3.1-Flash-Image
-生成器、Tavily 搜索。Provider **可插拔**——图像模型从配置选取，换一个只需改一行 `.env`
-（如用 `gpt-image-2` 替代 Gemini）。缺凭据时抛 `ProviderNotConfiguredError` 并给配置指引；
-某步失败会写结构化 error artifact，而非静默失败。
+生成器、Tavily 搜索。**接真实模型时默认走 code-as-brush**——论文是 *Code-Driven*，所以
+`external` 即代码即画笔；`external-template` 才退回模板路径。Provider **可插拔**——图像模型
+从配置选取，换一个只需改一行 `.env`（如用 `gpt-image-2` 替代 Gemini）。缺凭据时抛
+`ProviderNotConfiguredError` 并给配置指引；某步失败会写结构化 error artifact，而非静默失败。
 
 **关于图像模型：** code-as-brush 的上色步需要**图生图（image-to-image）**模型（它要以草图为条件）。
 **纯文生图（text-to-image）**模型看不到草图，会让管道退回黑盒生成——这类模型只能当对照基线，不能当上色师。

@@ -58,7 +58,7 @@ err_console = Console(stderr=True)
 @app.command()
 def run(
     prompt: str = typer.Option(..., "--prompt", "-p", help="Natural-language request."),
-    mode: str = typer.Option("fixture", "--mode", help="Provider mode: 'fixture', 'external', or 'external-code' (code-as-brush)."),
+    mode: str = typer.Option("fixture", "--mode", help="fixture | external (code-as-brush, default for real models) | external-template (structured) | external-code (alias)."),
     out: Path = typer.Option(Path("outputs/runs"), "--out", help="Run output base dir."),
     max_revisions: int = typer.Option(1, "--max-revisions", help="Review retry budget."),
     use_langgraph: bool = typer.Option(False, "--langgraph", help="Drive via LangGraph."),
@@ -66,11 +66,24 @@ def run(
     """Run the pipeline for a prompt and write a complete run directory.
 
     'fixture' is deterministic and needs no credentials. 'external' uses the
-    paper-aligned stack (Claude-Opus agent, Gemini generator, VLM reviewer) and
-    requires ANTHROPIC_API_KEY / GOOGLE_API_KEY.
+    paper-aligned stack (Claude-Opus agent, image generator, VLM reviewer) and
+    defaults to CODE-AS-BRUSH: the LLM writes SVG/HTML/Three.js source directly.
+    'external-template' is the structured-template fallback (no model code run).
+    Requires ANTHROPIC_API_KEY / GOOGLE_API_KEY.
     """
     from genclaw.config import ProviderNotConfiguredError
     from genclaw.pipeline import Pipeline
+
+    # Security notice: code-as-brush executes model-authored code (HTML/Three.js
+    # run JS in headless Chromium with NO sandbox; ADR 0005). Warn explicitly so
+    # the user knows what a real-model run does. external-template does not.
+    if mode in ("external", "external-code"):
+        err_console.print(
+            "[yellow]⚠ code-as-brush: about to render model-authored code. "
+            "HTML/Three.js execute JS in headless Chromium with no sandbox "
+            "(ADR 0005). Use only with trusted input; use --mode external-template "
+            "to avoid running model code.[/yellow]"
+        )
 
     try:
         pipeline = Pipeline.for_mode(mode, base_dir=out, use_langgraph=use_langgraph)

@@ -43,9 +43,14 @@ def build_providers(mode: str):
 
     * ``fixture``  -- deterministic, credential-free (FixtureAgent + mock + rules
       + null search).
-    * ``external`` -- paper-aligned stack (ADR 0004): Claude-Opus agent, Gemini
-      generator, VLM reviewer, Tavily multi-round search. Adapters raise
-      ProviderNotConfiguredError at call time if credentials are missing.
+    * ``external`` -- paper-aligned stack (ADR 0004) with **code-as-brush** by
+      default: the LLM writes free-form SVG/HTML/Three.js source (the paper's
+      core mechanism). Claude-Opus agent, image generator, VLM reviewer, Tavily
+      search. Adapters raise ProviderNotConfiguredError if credentials missing.
+    * ``external-template`` -- same stack but the agent emits a *structured*
+      template plan instead of free-form code. The deterministic fallback /
+      baseline; does not execute model-authored code.
+    * ``external-code`` -- explicit alias for ``external`` (code-as-brush).
 
     Returns a 4-tuple; raises ValueError for an unknown mode.
     """
@@ -56,7 +61,7 @@ def build_providers(mode: str):
             RuleReviewer(),
             NullSearchProvider(),
         )
-    if mode in ("external", "external-code"):
+    if mode in ("external", "external-code", "external-template"):
         from genclaw.agent.external import ExternalLLMAgent
         from genclaw.generators.external import (
             GeminiImageGenerator,
@@ -78,9 +83,11 @@ def build_providers(mode: str):
         # Structural checks run on the canvas source; the VLM judges only the
         # final image's perceptual fidelity (see CompositeReviewer).
         reviewer = CompositeReviewer(perceptual=VLMReviewer())
-        # external-code: code-as-brush (ADR 0005) -- the agent writes free-form
-        # SVG source instead of a structured template plan.
-        agent = ExternalLLMAgent(code_mode=(mode == "external-code"))
+        # code-as-brush is the DEFAULT for real models (ADR 0003/0005): the paper
+        # is "code-driven", so external == code-as-brush. Only external-template
+        # opts out to the structured template path.
+        code_mode = mode != "external-template"
+        agent = ExternalLLMAgent(code_mode=code_mode)
         return (
             agent,
             generator,
@@ -88,7 +95,8 @@ def build_providers(mode: str):
             TavilySearchProvider(),
         )
     raise ValueError(
-        f"unknown mode {mode!r}; expected 'fixture', 'external', or 'external-code'"
+        f"unknown mode {mode!r}; expected 'fixture', 'external', "
+        "'external-code', or 'external-template'"
     )
 
 
