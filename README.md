@@ -1,168 +1,142 @@
-# imageAgent — GenClaw reproduction
+# imageAgent — GenClaw 复现
 
-An independent, from-scratch reproduction of **GenClaw: Code-Driven Agentic Image
-Generation** (arXiv `2605.30248`). The agent generates images the way a human
-artist works — **first conceptualize, then sketch in code, then color** — instead
-of firing a single prompt at a black-box text-to-image model.
+论文 **GenClaw: Code-Driven Agentic Image Generation**（arXiv `2605.30248`）的独立复现。
+让智能体像人类画家一样作画——**先构思、再用代码起稿、后上色**，而不是把一句 prompt 丢给黑盒文生图模型。
 
-> ⚠️ **Independent reproduction.** Built from the paper as a spec. The official
-> code/demo was unreleased at the time of writing; this project does not run the
-> authors' code and does not claim to reproduce their exact numbers.
+> ⚠️ **独立复现。** 以论文为规格从零实现。官方代码/demo 在撰写时尚未发布；本项目不复跑作者代码，也不声称精确复现论文数值。
 
 ---
 
-## Why code-as-brush?
+## 为什么是 code-as-brush（代码即画笔）
 
-Natural language is ambiguous about **counts, coordinates, text, and occlusion**
-("three red circles on the left", "A behind B"). Code is not:
-`<circle cx="100" cy="50" r="40"/>` is exact. GenClaw lets the LLM **write the
-canvas source code** (SVG / HTML / Three.js) to lock the structure, then hands
-that sketch to an image model purely as a **colorist** for texture and lighting.
+自然语言在**数量、坐标、文字、遮挡**上有歧义（"左边三个红圆"、"A 在 B 后面"），而代码没有：
+`<circle cx="100" cy="50" r="40"/>` 就是精确的。GenClaw 让 LLM **直接写画布源码**（SVG / HTML / Three.js）
+来锁定结构，再把这张草图作为**视觉条件**交给图像模型，让它只当"上色师"补材质和光照。
 
-Result: counts, layout, and text come out right (the code guarantees them) while
-the image model supplies realism. This is decisively better than pure
-text-to-image on **counting, spatial relations, data charts, and rare glyphs** —
-and roughly even on ordinary scenes, where frontier image models already cope.
+效果：数量、布局、文字都正确（由代码保证），真实感由图像模型补。在**计数、空间关系、数据图表、生僻字**
+这类任务上明显强于纯文生图；在普通场景上与之持平（前沿图像模型本身已够强）。
 
-## Architecture — three layers (LangGraph)
+## 架构 — 三层（LangGraph 编排）
 
 ```
 conceptualize → search → render → generate → review → route_after_review
-   (Think)      (facts)  (Sketch) (Color)   (verify)   └─(fail & under budget)→ revise → render
+   (构思)       (检索)   (起稿)   (上色)    (审查)    └─(失败且未超限)→ revise → render
 ```
 
-1. **Think** — prompt → schema-validated `CanvasPlan` (Pydantic). Intent
-   understanding + optional **search** (knowledge grounding) + **reasoning**
-   slots. The plan, not free-text, is the central contract.
-2. **Sketch** — compile/emit executable canvas code and rasterize to a PNG:
-   - **SVG** — composition, counts, spatial relations, diagrams
-   - **HTML/CSS** — long text, posters, cards (real layout engine)
-   - **Three.js** — 3D geometry / physics / viewpoint (headless WebGL)
-   - **Python (matplotlib) / Canvas** — numeric physical drafts
-3. **Color + Review** — feed the sketch as a **visual condition** to an image
-   model (image-to-image), then review (deterministic rules + optional VLM) and
-   iterate up to a budget.
+1. **构思（Think）** — prompt → schema 校验的 `CanvasPlan`（Pydantic）。意图理解 +
+   可选**搜索**（知识接地）+ **推理**槽位。中心契约是结构化 plan，不是自然语言。
+2. **起稿（Sketch）** — 编译/生成可执行画布代码并渲染成 PNG：
+   - **SVG** — 组合、计数、空间关系、图表
+   - **HTML/CSS** — 长文本、海报、卡片（有真正的排版引擎）
+   - **Three.js** — 3D 几何 / 物理 / 视角（headless WebGL）
+   - **Python（matplotlib）/ Canvas** — 数值型物理草图
+3. **上色 + 审查（Color + Review）** — 把草图作**视觉条件**喂给图像模型（图生图），
+   再审查（确定性规则 + 可选 VLM）并有上限地迭代。
 
-Two ways the canvas is produced:
-- **structured** (templates fill validated fields) — the deterministic scaffold.
-- **code** (the LLM writes the source directly) — **code-as-brush**, the paper's
-  core mechanism. Enable with `--mode external-code`.
+画布有两种产生方式：
+- **structured（结构化）** — 模板填入校验过的字段，确定性脚手架。
+- **code（代码）** — LLM 直接写源码，即 **code-as-brush**，论文的核心机制。用 `--mode external-code` 启用。
 
-## Install
+## 安装
 
-Requires Python 3.10+.
+需要 Python 3.10+。
 
 ```bash
 pip install -e ".[dev]"
-python -m playwright install chromium     # for SVG/HTML/Three.js → PNG
+python -m playwright install chromium     # SVG/HTML/Three.js → PNG 所需
 ```
 
-If PyPI is unreachable (TLS resets on `pypi.org`), use a mirror:
+若 PyPI 直连不通（`pypi.org` 被 TLS 重置），改用国内镜像：
 
 ```bash
 pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 pip config set global.trusted-host pypi.tuna.tsinghua.edu.cn
-# Playwright browser binary via mirror:
+# Playwright 浏览器二进制走镜像：
 PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright \
   python -m playwright install chromium
 ```
 
-## Quickstart — fixture mode (no credentials)
+## 快速开始 — fixture 模式（无需凭据）
 
-Deterministic agent + mock generator. Exercises the whole pipeline
-(orchestration / render / review / artifacts) with no API keys; does not produce
-photorealism.
+确定性 agent + mock 生成器。跑通整条管道（编排 / 渲染 / 审查 / 产物），无需任何 API key；不产出真实感图像。
 
 ```bash
 genclaw run --prompt "three red circles on the left" --mode fixture
 genclaw run --prompt "poster for GenClaw with title Code as Brush" --mode fixture
 genclaw run --prompt "mirror reflection of a small ball" --mode fixture
 
-genclaw render --plan path/to/plan.json     # compile a saved plan standalone
-genclaw review --run-dir path/to/run        # re-run rule review on a finished run
-genclaw bench  --suite mini                  # local regression smoke
-pytest -q                                    # tests
+genclaw render --plan path/to/plan.json     # 单独编译一个已保存的 plan
+genclaw review --run-dir path/to/run        # 对已完成的 run 重跑规则审查
+genclaw bench  --suite mini                  # 本地回归冒烟
+pytest -q                                    # 测试
 ```
 
-Every run writes a complete, inspectable directory
-`outputs/runs/<timestamp>-<request_id>/`:
-`request.json`, `plan.json`, `canvas.{svg,html,py}`, `sketch.png`, `final.png`,
-`review.json`, `trace.jsonl`.
+每次 run 写出完整、可检查的目录 `outputs/runs/<时间戳>-<request_id>/`：
+`request.json`、`plan.json`、`canvas.{svg,html,py}`、`sketch.png`、`final.png`、`review.json`、`trace.jsonl`。
 
-## External mode — real models
+## external 模式 — 接入真实模型
 
-Configure credentials in a local `.env` (copy `.env.example`; `.env` is
-gitignored). The CLI auto-loads it.
+在本地 `.env` 配置凭据（复制 `.env.example`；`.env` 已 gitignore）。CLI 会自动加载。
 
 ```bash
 # .env
-ANTHROPIC_API_KEY=sk-...          # Claude agent + VLM reviewer
-GOOGLE_API_KEY=...                # image generator
-# Optional: route through an Anthropic/OpenAI-compatible proxy/gateway
+ANTHROPIC_API_KEY=sk-...          # Claude agent + VLM 审查
+GOOGLE_API_KEY=...                # 图像生成
+# 可选：走 Anthropic/OpenAI 兼容的代理/网关
 ANTHROPIC_BASE_URL=https://...
 GOOGLE_BASE_URL=https://...
-GENCLAW_GENERATOR_MODEL=...       # override image model id if your proxy differs
-TAVILY_API_KEY=...                # multi-round search (knowledge grounding)
+GENCLAW_GENERATOR_MODEL=...       # 代理的图像模型 id 不同时覆盖
+TAVILY_API_KEY=...                # 多轮搜索（知识接地）
 ```
 
 ```bash
 pip install -e ".[providers]"
 
-# external: structured templates + real models
-genclaw run --prompt "your prompt" --mode external
+# external：结构化模板 + 真实模型
+genclaw run --prompt "你的 prompt" --mode external
 
-# external-code: CODE-AS-BRUSH — the LLM writes SVG/HTML/Three.js source itself
-genclaw run --prompt "a poster titled Quantum 101 with three bullet points" \
+# external-code：CODE-AS-BRUSH —— LLM 自己写 SVG/HTML/Three.js 源码
+genclaw run --prompt "一张极简咖啡馆菜单卡片，标题晨光咖啡，三个分区..." \
   --mode external-code
 ```
 
-Default stack aligns with the paper (ADR 0004): Claude-Opus agent + VLM reviewer,
-Gemini-3.1-Flash-Image generator, Tavily search. Providers are **pluggable** —
-the image model is selected from config, so swapping it is a one-line `.env`
-change (e.g. `gpt-image-2` instead of Gemini). Missing credentials raise
-`ProviderNotConfiguredError` with setup hints, and a failed step writes a
-structured error artifact instead of failing silently.
+默认栈对齐论文（见 ADR 0004）：Claude-Opus agent + VLM 审查、Gemini-3.1-Flash-Image
+生成器、Tavily 搜索。Provider **可插拔**——图像模型从配置选取，换一个只需改一行 `.env`
+（如用 `gpt-image-2` 替代 Gemini）。缺凭据时抛 `ProviderNotConfiguredError` 并给配置指引；
+某步失败会写结构化 error artifact，而非静默失败。
 
-**Note on image models:** code-as-brush's Color step needs an **image-to-image**
-model (it conditions on the sketch). A pure **text-to-image** model ignores the
-sketch and collapses the pipeline back to black-box generation — use one only as
-a baseline, not as the colorist.
+**关于图像模型：** code-as-brush 的上色步需要**图生图（image-to-image）**模型（它要以草图为条件）。
+**纯文生图（text-to-image）**模型看不到草图，会让管道退回黑盒生成——这类模型只能当对照基线，不能当上色师。
 
-## Paper mechanism ↔ coverage (honest status)
+## 论文机制 ↔ 覆盖度（诚实声明）
 
-- ✅ **Working**: intent understanding (fixture + LLM agent); search node
-  (wired); SVG/HTML/Three.js/Python/Canvas rendering; **code-as-brush**
-  (`external-code`, SVG/HTML/Three.js verified end-to-end); rule review;
-  composite (structural + VLM) review; artifact/trace.
-- ◑ **Scaffolded**: real multi-round search (needs Tavily key); reasoning
-  (`ReasoningStep` schema present, auto-fill pending); image coloring + VLM
-  review (run end-to-end via proxy; quality varies).
-- ✗ **Not yet (phase 2 / deferred)**: **layered editing + SAM3 + inpainting**
-  (the paper's hardest quantitative claim, ImgEdit PSNR/SSIM — biggest gap);
-  **execution sandbox** for HTML/Three.js code-as-brush (see Security); official
-  benchmarks (GenEval++/LongText/ImgEdit/Mind-Bench).
+- ✅ **已实现可跑**：意图理解（fixture + LLM agent）；search 节点（已接线）；
+  SVG/HTML/Three.js/Python/Canvas 渲染；**code-as-brush**（`external-code`，
+  SVG/HTML/Three.js 已端到端验证）；规则审查；复合审查（结构 + VLM）；artifact/trace。
+- ◑ **已搭结构 / stub**：真实多轮搜索（需 Tavily key）；推理（`ReasoningStep` schema
+  已建，自动填充待接）；图像上色 + VLM 审查（经代理已端到端跑通，质量有波动）。
+- ✗ **尚未实现（phase 2 / 暂缓）**：**分层编辑 + SAM3 + inpainting**（论文最硬的定量
+  主张 ImgEdit PSNR/SSIM，当前最大缺口）；HTML/Three.js code-as-brush 的**执行沙箱**（见安全）；
+  官方 benchmark（GenEval++/LongText/ImgEdit/Mind-Bench）。
 
-See `docs/reproduction-roadmap.md` and `docs/TODO.md` for the live status.
+实时状态见 `docs/reproduction-roadmap.md` 和 `docs/TODO.md`。
 
-## ⚠️ Security
+## ⚠️ 安全
 
-`--mode external-code` runs **model-authored code**:
-- SVG goes through a static allow-list validator (no scripts/external refs).
-- **HTML/Three.js execute arbitrary JS in headless Chromium with NO sandbox**
-  (no network isolation, CSP, or resource caps). This is acceptable only for a
-  **local, single-machine** run with trusted-LLM input. **Do not expose to
-  untrusted input or deploy publicly** until the execution-sandbox work (ADR
-  0005, deferred) lands.
+`--mode external-code` 会运行**模型生成的代码**：
+- SVG 经过静态白名单校验（禁脚本/外链）。
+- **HTML/Three.js 在 headless Chromium 中直接执行任意 JS，无沙箱**（无网络隔离、CSP、
+  资源上限）。这仅在**本地单机、可信 LLM 输入**下可接受。**在执行沙箱（ADR 0005，已推迟）
+  落地前，切勿暴露给不可信输入或公开部署。**
 
-## Docs
+## 文档
 
-- `docs/specs/` — requirements, scope, paper-coverage table
-- `docs/plans/` — ordered implementation tasks
-- `docs/adr/` — architecture decisions (0001 artifact-first/pluggable, 0002
-  LangGraph, 0003 template vs free-form, 0004 provider/benchmark, 0005
-  code-as-brush + deferred sandbox)
-- `docs/reproduction-notes.md`, `docs/reproduction-roadmap.md`, `docs/TODO.md`
+- `docs/specs/` — 需求、范围、论文覆盖度表
+- `docs/plans/` — 有序实现任务
+- `docs/adr/` — 架构决策（0001 artifact-first/可插拔、0002 LangGraph、0003 模板 vs
+  free-form、0004 provider/benchmark、0005 code-as-brush + 推迟沙箱）
+- `docs/reproduction-notes.md`、`docs/reproduction-roadmap.md`、`docs/TODO.md`
 
-## License
+## 许可
 
-Apache-2.0.
+Apache-2.0。
