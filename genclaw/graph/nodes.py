@@ -108,15 +108,31 @@ class GraphNodes:
     # --- nodes -----------------------------------------------------------------
 
     def conceptualize(self, state: GenClawState) -> GenClawState:
-        """第一节点:把用户 prompt 变 :class:`CanvasPlan`,并把 plan artifact 落盘。"""
+        """第一节点:把用户 prompt 变 :class:`CanvasPlan`,并把 plan artifact 落盘。
+
+        ``search_node`` 已在本节点之前跑过(论文 §3.1-3.2:先搜索补全认知空白
+        再画),所以这里把 ``state.knowledge`` 回传给 agent,让 LLM 写代码时
+        能看到检索到的事实,并在 plan 落盘前合进 ``plan.knowledge``。
+        """
         if self.on_progress:
             self.on_progress("conceptualize", "starting", None)
         try:
             plan = self.agent.conceptualize(
-                state.prompt, state.task_type, request_id=state.request_id
+                state.prompt,
+                state.task_type,
+                request_id=state.request_id,
+                knowledge=state.knowledge or None,
             )
         except Exception as exc:
             return self._fail(state, "conceptualize", exc)
+
+        # 把 pre-search 检索到的事实合进 plan(去重靠 source+claim),让
+        # knowledge 成为 plan artifact 的一部分,reviewer 可追溯。
+        if state.knowledge:
+            seen = {(k.source, k.claim) for k in plan.knowledge}
+            for ref in state.knowledge:
+                if (ref.source, ref.claim) not in seen:
+                    plan.knowledge.append(ref)
 
         state.plan = plan
         # 用 agent 给的 task_type 反向校正 state.task_type(单一真值原则)
@@ -140,14 +156,16 @@ class GraphNodes:
     def search_node(self, state: GenClawState) -> GenClawState:
         """用 search provider 补齐知识缺口(论文 §3.1-3.2)。
 
-        Gated:只有 knowledge-grounded 任务才检索;检索到的 fact 合进
-        plan.knowledge(每条带 traceable source),并重写 plan artifact。
-        NullSearchProvider 是「真但不取数」,所以这一步协议存在、行为
-        no-op,fixture / 离线环境都能跑。
+        在 ``conceptualize`` *之前*运行:先把检索到的事实存进 ``state.knowledge``,
+        conceptualize 再带着这些事实写代码——这样搜索结果真正参与生成,而不是
+        画完才补一份用不上的知识。
+
+        Gated:只有判定需要知识接地的 prompt 才检索(prompt 启发式 + task_type,
+        此时 task_type 可能为 None,gate 主要靠 prompt 里的具名实体)。
+        NullSearchProvider 是「真但不取数」,所以这一步协议存在、行为 no-op,
+        fixture / 离线环境都能跑。
         """
-        if state.plan is None:
-            return state  # conceptualize 已经挂了,这里没东西可补
-        if not self.search.should_search(state.prompt, state.plan.task_type):
+        if not self.search.should_search(state.prompt, state.task_type):
             if self.on_progress:
                 self.on_progress("search", "skipped", None)
             self._record(state, "search", input_summary="skipped (not knowledge-grounded)")
@@ -162,16 +180,11 @@ class GraphNodes:
             # search 失败不能让整个 run 挂掉:记错,继续往下走(还有 agent 自己的 knowledge)
             return self._fail(state, "search", exc, fatal=False)
 
-        state.plan.knowledge.extend(refs)
-        if state.artifacts is not None:
-            state.artifacts.write_json(
-                state.artifacts.plan_path, state.plan.model_dump(mode="json")
-            )
+        state.knowledge = list(state.knowledge) + refs
         self._record(
             state,
             "search",
             input_summary=f"provider={self.search.name} facts={len(refs)}",
-            artifacts=[state.artifacts.plan_path] if state.artifacts else None,
         )
         if self.on_progress:
             self.on_progress("search", "done", {"facts": len(refs), "provider": self.search.name})

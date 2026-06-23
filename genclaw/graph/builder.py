@@ -6,6 +6,9 @@ LangGraph workflow::
     conceptualize -> search -> render -> generate -> review -> route_after_review
                                                                 |-> revise -> render (loop)
 
+注:实际边顺序是 ``search -> conceptualize -> render ...``(search 前置,
+先检索知识再让 agent 带着事实写代码,见 :func:`build_graph`)。
+
 ``search`` 节点给知识类任务先做检索(paper §3.1-3.2),内部 gate 起来,
 对非知识类任务是 no-op。
 
@@ -55,10 +58,11 @@ def build_graph(nodes: GraphNodes) -> Any:
     graph.add_node("review", nodes.review)
     graph.add_node("revise", nodes.revise)
 
-    graph.set_entry_point("conceptualize")
-    # 主干: conceptualize -> search -> render -> generate -> review
-    graph.add_edge("conceptualize", "search")
-    graph.add_edge("search", "render")
+    graph.set_entry_point("search")
+    # 主干: search -> conceptualize -> render -> generate -> review
+    # search 前置:先检索知识,conceptualize 带着事实写代码(论文 §3.1-3.2)
+    graph.add_edge("search", "conceptualize")
+    graph.add_edge("conceptualize", "render")
     graph.add_edge("render", "generate")
     graph.add_edge("generate", "review")
     # 条件边: review 之后由 route_after_review 决定下一步

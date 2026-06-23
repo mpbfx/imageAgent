@@ -231,10 +231,11 @@ class Pipeline:
 
     def _run_direct(self, nodes: GraphNodes, state: GenClawState, skip_review: bool = False) -> GenClawState:
         """直接按顺序执行节点,镜像 LangGraph 的边和路由。"""
+        # search 前置:先检索知识,再让 LLM 带着这些事实写代码(论文 §3.1-3.2)
+        state = nodes.search_node(state)
         state = nodes.conceptualize(state)
         if state.plan is None:  # conceptualize 失败;停,error 已写。
             return state
-        state = nodes.search_node(state)  # 在 sketch 之前先做知识接地
 
         revision = 0
         while True:

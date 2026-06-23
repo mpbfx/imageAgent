@@ -30,11 +30,11 @@ class AgentProvider(abc.ABC):
         prompt: str,
         task_type: Optional[TaskType] = None,
         request_id: Optional[str] = None,
+        knowledge: Optional[list] = None,
     ) -> CanvasPlan:
         """把 ``prompt`` 结构化成 :class:`CanvasPlan`。
 
-        输入:prompt(用户自然语言需求)、task_type(可选,任务族;为 None
-        时由实现自行推断)、request_id(可选,run 标识,写进 artifact)。
-        输出:必须是一个通过 schema 校验的 CanvasPlan。
+        ``knowledge`` 是 pre-search 阶段已检索到的 :class:`~genclaw.schemas.KnowledgeRef`
+        列表,实现应把这些事实注入 prompt 让 LLM 写代码时能参考。
         """
         raise NotImplementedError

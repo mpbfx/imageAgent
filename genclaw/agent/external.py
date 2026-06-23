@@ -101,6 +101,34 @@ class PlanParseError(RuntimeError):
         )
 
 
+def _format_knowledge(knowledge: Optional[list]) -> str:
+    """把 pre-search 检索到的 KnowledgeRef 列表格式化成可注入 prompt 的文本块。
+
+    没有知识时返回空串(模板里的 {knowledge_context} 槽就什么也不显示)。
+    有知识时给出带来源的事实清单,并明确指示 LLM 据此画出真实外观,而不是
+    凭记忆瞎猜。
+    """
+    if not knowledge:
+        return ""
+    lines = [
+        "",
+        "REFERENCE FACTS (retrieved by a search step for the named entity in this",
+        "request). Use these to depict the subject's REAL appearance -- shape,",
+        "proportions, distinctive features, colors -- instead of guessing:",
+    ]
+    for ref in knowledge:
+        claim = getattr(ref, "claim", None) or ""
+        source = getattr(ref, "source", None)
+        claim = claim.strip().replace("\n", " ")
+        if len(claim) > 300:
+            claim = claim[:300] + "..."
+        if not claim:
+            continue
+        lines.append(f"- {claim}" + (f" [source: {source}]" if source else ""))
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _extract_json(text: str) -> str:
     """尽力从模型返回里抽出最外层 JSON 对象。
 
@@ -143,17 +171,24 @@ class ExternalLLMAgent(AgentProvider):
         prompt: str,
         task_type: Optional[TaskType] = None,
         request_id: Optional[str] = None,
+        knowledge: Optional[list] = None,
     ) -> CanvasPlan:
         rid = request_id or "llm"
         tt = task_type.value if task_type else "infer the most appropriate one"
+        # pre-search 检索到的事实,注入 prompt 让 LLM 写代码时能参考真实外观。
+        knowledge_context = _format_knowledge(knowledge)
         # 根据 code_mode 选不同 prompt 模板：模板里有「返回 JSON」还是
         # 「返回 code_source 字段」的关键区别。
         if self.code_mode:
             system = CODE_SYSTEM_PROMPT
-            user = CODE_DEVELOPER_PROMPT.format(task_type=tt, request_id=rid, prompt=prompt)
+            user = CODE_DEVELOPER_PROMPT.format(
+                task_type=tt, request_id=rid, prompt=prompt, knowledge_context=knowledge_context
+            )
         else:
             system = SYSTEM_PROMPT
-            user = DEVELOPER_PROMPT.format(task_type=tt, request_id=rid, prompt=prompt)
+            user = DEVELOPER_PROMPT.format(
+                task_type=tt, request_id=rid, prompt=prompt, knowledge_context=knowledge_context
+            )
 
         attempts: list[str] = []
         last_error = ""

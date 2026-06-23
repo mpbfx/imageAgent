@@ -32,7 +32,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from genclaw.artifacts import RunArtifacts
 from genclaw.generators.base import GenerationResult
 from genclaw.renderers.base import RenderedCanvas
-from genclaw.schemas import CanvasPlan, ReviewResult, TaskType
+from genclaw.schemas import CanvasPlan, KnowledgeRef, ReviewResult, TaskType
 
 
 class GenClawState(BaseModel):
@@ -53,6 +53,9 @@ class GenClawState(BaseModel):
     rendered_canvas: Optional[RenderedCanvas] = None
     generation_result: Optional[GenerationResult] = None
     review_result: Optional[ReviewResult] = None
+
+    # pre-conceptualize 搜索结果;conceptualize 节点会把它合进 plan.knowledge
+    knowledge: list[KnowledgeRef] = Field(default_factory=list)
 
     # --- control ---------------------------------------------------------------
     # revision_count:已经触发过几次 revise;max_revisions:路由函数看这个预算

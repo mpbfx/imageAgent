@@ -53,6 +53,7 @@ class FixtureAgent(AgentProvider):
         prompt: str,
         task_type: Optional[TaskType] = None,
         request_id: Optional[str] = None,
+        knowledge: Optional[list] = None,
     ) -> CanvasPlan:
         rid = request_id or "fixture"
         low = prompt.lower()

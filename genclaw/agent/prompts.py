@@ -212,6 +212,7 @@ Task type: {task_type}
 Request id: {request_id}
 User prompt:
 {prompt}
+{knowledge_context}
 """
 
 # 之前尝试失败、需要回喂给模型做有界重试时追加(plan task 14):
@@ -435,4 +436,5 @@ Task type: {task_type}
 Request id: {request_id}
 User prompt:
 {prompt}
+{knowledge_context}
 """
