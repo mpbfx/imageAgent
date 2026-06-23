@@ -42,15 +42,14 @@ def _renderer_for(backend: CanvasBackend) -> Renderer:
     if backend is CanvasBackend.html:
         return HTMLRenderer()
     if backend is CanvasBackend.three:
-        # 懒加载:Three.js renderer(task 8)依赖浏览器,fixture 环境不一定有
         from genclaw.renderers.three import ThreeRenderer
-
         return ThreeRenderer()
     if backend in (CanvasBackend.python, CanvasBackend.canvas):
-        # 数值/物理草稿后端(论文 §3.2:Python plotting / Canvas)
         from genclaw.renderers.physics import PhysicsRenderer
-
         return PhysicsRenderer(backend)
+    if backend is CanvasBackend.passthrough:
+        from genclaw.renderers.passthrough import PassthroughRenderer
+        return PassthroughRenderer()
     raise ValueError(f"no renderer for backend {backend!r}")
 
 
@@ -64,6 +63,11 @@ def _renderer_for_plan(plan: CanvasPlan) -> Renderer:
     if plan.source is CanvasSource.code:
         from genclaw.renderers.code import CodeRenderer
 
+        # passthrough 后端即使被标成 code,也不编译代码——它本就是"不画草图"。
+        if plan.backend is CanvasBackend.passthrough:
+            from genclaw.renderers.passthrough import PassthroughRenderer
+
+            return PassthroughRenderer()
         return CodeRenderer()
     return _renderer_for(plan.backend)
 

@@ -46,8 +46,10 @@ Allowed enums (use these exact lowercase strings):
   you would otherwise be guessing the appearance. This triggers a search step.
 - backend: "svg" (object count / layout / spatial relations / local edits)
   | "html" (long text, posters, cards, pages) | "three" (3D geometry / physics
-  / viewpoint) | "python" (matplotlib numeric physical drafts) | "canvas"
-  (2D canvas physical/geometric drafts)
+  / viewpoint -- NOT for photorealistic scenes) | "python" (matplotlib numeric
+  physical drafts) | "canvas" (2D canvas physical/geometric drafts)
+  | "passthrough" (photorealistic / aesthetic scenes with no structural constraint;
+  no canvas code generated -- image model works from prompt + search reference images)
 
 Field shapes:
 - size: {"width": <int>, "height": <int>}
@@ -286,8 +288,14 @@ what the backend is fundamentally good at:
   ranges are legible; save with transparent background only if background is
   explicitly requested.
 
-- "three": choose this for 3D -- geometry, physics, lighting, viewpoint/depth,
-  reflections, shadows. Use THREE.js for interactive or complex 3D visualization.
+- "three": choose this ONLY when 3D GEOMETRY or PHYSICS is the core challenge --
+  object counts/positions in 3D space, mirror reflections, viewpoint/depth
+  reasoning, geometric relations that must be exact. Do NOT pick "three" just
+  because a scene "sounds 3D" or wants photorealistic lighting/atmosphere -- a
+  rough Three.js render is a POOR sketch for a photorealistic photo and will drag
+  the final image down. If the request is mainly about look/mood/material/texture
+  (e.g. "cinematic photo of X", "X in a stunning landscape") with no geometric
+  constraint to enforce, use "passthrough" instead.
   CRITICAL for quality THREE.js rendering:
     * Materials: use MeshStandardMaterial (metalness/roughness) for physically
       correct rendering, NOT MeshPhongMaterial or MeshBasicMaterial.
@@ -329,15 +337,24 @@ what the backend is fundamentally good at:
     * Canvas sizing: must match requested width/height exactly; use
       renderer.setPixelRatio(1) for 1:1 mapping.
 
+- "passthrough": choose this for PHOTOREALISTIC / AESTHETIC prompts where the
+  value is in material, texture, lighting, atmosphere, mood -- NOT in object
+  count or geometric layout. Examples: "cinematic photo of X", "X in a
+  stunning landscape", "retro-futuristic photograph of Y". No canvas code is
+  generated; the image model works directly from your prompt (+ any reference
+  images retrieved by search). Choose passthrough when a rough 3D sketch would
+  hurt more than help. When source is "code" and backend is "passthrough",
+  set code_source to null and code_lang to null.
+
 Tie-breaker: if a task could be argued either way, ask "is this mainly arranging
 TEXT, or mainly placing SHAPES?" Text -> html. Shapes -> svg.
 
 Return ONLY a single JSON object with these fields:
 - request_id, prompt, task_type ("composition"|"long_text"|"physical_reasoning"
-  |"editing"|"knowledge_grounded"), backend ("svg"|"html"|"three"|"python"),
-  source ("code"), code_lang ("svg"|"html"|"three"|"python"),
+  |"editing"|"knowledge_grounded"), backend ("svg"|"html"|"three"|"python"|"passthrough"),
+  source ("code"), code_lang ("svg"|"html"|"three"|"python" or null for passthrough),
   size {"width":int,"height":int}, and
-  code_source: a COMPLETE, self-contained document as a string.
+  code_source: a COMPLETE, self-contained document as a string (or null for passthrough).
 
 Per code_lang, code_source must be:
 - svg:  a complete <svg>...</svg> document. No <script>, no event handlers

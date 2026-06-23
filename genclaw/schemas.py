@@ -57,6 +57,7 @@ class CanvasBackend(str, Enum):
     three = "three"
     python = "python"  # Python 绘图(如 matplotlib)用于物理草图
     canvas = "canvas"  # 2D Canvas 脚本用于几何/物理参考
+    passthrough = "passthrough"  # 不画代码草图,直接文生图/图生图(纯写实/审美类)
 
 
 class CanvasSource(str, Enum):
@@ -243,7 +244,9 @@ class CanvasPlan(BaseModel):
                 )
 
         if self.source is CanvasSource.code and not self.code_source:
-            raise ValueError("source='code' requires non-empty code_source")
+            # passthrough 后端不生成代码,code_source 允许为空
+            if self.backend is not CanvasBackend.passthrough:
+                raise ValueError("source='code' requires non-empty code_source")
         return self
 
     def ordered_layers(self) -> list[LayerSpec]:

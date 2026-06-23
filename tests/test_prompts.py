@@ -50,6 +50,20 @@ def test_three_js_quality_checklist():
     assert "castShadow" in CODE_DEVELOPER_PROMPT
 
 
+def test_planar_mirror_uses_reflector_not_envmap():
+    """Planar mirrors must use THREE.Reflector, not MeshStandardMaterial+envMap.
+
+    Regression guard: envMap/CubeCamera only yields a blurry spherical
+    reflection, so a flat mirror rendered that way will not show geometrically
+    correct images of scene objects (the "镜子里没有小球" bug).
+    """
+    for prompt in (CODE_SYSTEM_PROMPT, CODE_DEVELOPER_PROMPT):
+        assert "Reflector" in prompt
+        # the prompt must steer away from faking a flat mirror via envMap
+        assert "envMap" in prompt
+    assert "objects/Reflector.js" in CODE_SYSTEM_PROMPT
+
+
 def test_structured_prompt_has_backend_guidance():
     """Verify SYSTEM_PROMPT (structured mode) has backend-specific guidance."""
     assert "BACKEND-SPECIFIC GUIDANCE" in SYSTEM_PROMPT
