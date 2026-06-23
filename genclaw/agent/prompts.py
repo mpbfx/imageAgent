@@ -288,14 +288,19 @@ what the backend is fundamentally good at:
   ranges are legible; save with transparent background only if background is
   explicitly requested.
 
-- "three": choose this ONLY when 3D GEOMETRY or PHYSICS is the core challenge --
-  object counts/positions in 3D space, mirror reflections, viewpoint/depth
-  reasoning, geometric relations that must be exact. Do NOT pick "three" just
-  because a scene "sounds 3D" or wants photorealistic lighting/atmosphere -- a
-  rough Three.js render is a POOR sketch for a photorealistic photo and will drag
-  the final image down. If the request is mainly about look/mood/material/texture
-  (e.g. "cinematic photo of X", "X in a stunning landscape") with no geometric
-  constraint to enforce, use "passthrough" instead.
+- "three": choose this ONLY when the GEOMETRIC or PHYSICAL STRUCTURE itself is
+  the puzzle that must be computed -- mirror reflections at exact angles, objects
+  floating/stacked in 3D, viewpoint-dependent occlusion, precise 3D spatial
+  relations. Hard rules:
+  * "objects sitting/lying on a surface" -> NOT three (no 3D reasoning needed)
+  * "photo of X on a desk/table/shelf" -> NOT three -> passthrough (or svg if count matters)
+  * "cinematic/aesthetic photo of X" -> NOT three -> passthrough
+  * "X in a landscape/environment" -> NOT three -> passthrough
+  * "two mirrors at 90 degrees" -> three (geometric reflection computation needed)
+  * "balls floating above a plane, viewed from angle" -> three
+  A Three.js render of objects on a desk is a POOR sketch -- crude and 3D-looking
+  when the goal is a flat photograph. Use passthrough so the image model can work
+  from a real reference photo instead.
   CRITICAL for quality THREE.js rendering:
     * Materials: use MeshStandardMaterial (metalness/roughness) for physically
       correct rendering, NOT MeshPhongMaterial or MeshBasicMaterial.
