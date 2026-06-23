@@ -7,6 +7,11 @@ concrete renderers (tasks 6-8) and the Playwright rasterization helper (task 5)
 live in sibling modules and import the browser lazily, so this module stays
 importable without Playwright.
 """
+# 本模块：定义所有 renderer 的统一接口（抽象基类 Renderer）和渲染结果数据结构
+# （RenderedCanvas）。renderer 的职责是把校验过的 CanvasPlan 编译成可执行画布
+# 源码（SVG/HTML/Three.js），再光栅化成 PNG 草图(sketch)。
+# 关键设计：本文件只定义“契约”，不依赖 Playwright；具体后端实现和浏览器渲染
+# 都在同级模块里、且懒加载浏览器，所以即使没装 Playwright 也能 import 本模块。
 
 from __future__ import annotations
 

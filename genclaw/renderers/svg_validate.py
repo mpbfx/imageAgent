@@ -24,6 +24,13 @@ _ALLOWED_TAGS = {
     "lineargradient", "radialgradient", "stop", "pattern", "clippath", "mask",
     "filter", "fegaussianblur", "feoffset", "feblend", "femerge", "femergenode",
     "fecolormatrix", "fecomposite", "feflood", "use", "symbol", "marker",
+    # More pure-rendering SVG filter primitives (no script, safe to allow).
+    "fedropshadow", "femorphology", "fespecularlighting", "fediffuselighting",
+    "fepointlight", "fedistantlight", "fespotlight", "feturbulence",
+    "fedisplacementmap", "fetile", "feimage", "fecomponenttransfer",
+    "fefunca", "fefuncr", "fefuncg", "fefuncb", "feconvolvematrix",
+    "lineargradient", "radialgradient", "switch", "metadata", "title", "desc",
+    "tspan", "textpath", "lineargradient",
 }
 
 # Substrings that are forbidden anywhere (case-insensitive). These cover script

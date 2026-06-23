@@ -174,9 +174,15 @@ class GraphNodes:
         if state.rendered_canvas is None or state.artifacts is None:
             return self._fail(state, "generate", ValueError("nothing to generate from"))
         sketch = state.rendered_canvas.png_path or state.artifacts.sketch_path
+        # Pass task_type so the generator can pick rerender strength: text-heavy
+        # tasks need gentle treatment (preserve glyphs), material/scene tasks
+        # benefit from strong photorealistic re-rendering.
+        constraints = {}
+        if state.plan is not None:
+            constraints["task_type"] = state.plan.task_type.value
         try:
             result = self.generator.generate(
-                state.prompt, sketch, state.artifacts.final_path
+                state.prompt, sketch, state.artifacts.final_path, constraints
             )
         except Exception as exc:
             return self._fail(state, "generate", exc)

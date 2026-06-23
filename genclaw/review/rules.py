@@ -138,9 +138,20 @@ def _check_image_size(
     try:
         with Image.open(image_path) as img:
             actual = f"{img.width}x{img.height}"
+            aw, ah = img.width, img.height
     except UnidentifiedImageError:
         return False, "image_size: rendered image is not a valid image", False
-    expected = check.expected or f"{plan.size.width}x{plan.size.height}"
-    if actual == str(expected):
+    expected = str(check.expected or f"{plan.size.width}x{plan.size.height}")
+    if actual == expected:
         return True, f"image_size={actual}", True
+    # The sketch may be rasterized at an integer device-pixel-ratio (e.g. 2x for
+    # crisper text fed to an image model), so the PNG is N× the logical canvas
+    # size. Accept an exact integer multiple of the expected dimensions, keeping
+    # the aspect ratio — only flag genuine mismatches.
+    try:
+        ew, eh = (int(v) for v in expected.lower().split("x"))
+        if ew and eh and aw % ew == 0 and ah % eh == 0 and (aw // ew) == (ah // eh):
+            return True, f"image_size={actual} ({aw // ew}x of {expected})", True
+    except (ValueError, ZeroDivisionError):
+        pass
     return False, f"image_size expected {expected} but got {actual}", True

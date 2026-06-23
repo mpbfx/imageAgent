@@ -39,8 +39,15 @@ def render_html_to_png(
     height: int,
     timeout_ms: int = 15000,
     wait_for_frames: int = 0,
+    scale: float = 2.0,
 ) -> Path:
     """Render ``html`` to ``png_path`` at a fixed viewport.
+
+    ``scale`` is the device pixel ratio: the canvas is laid out at logical
+    ``width``x``height`` but rasterized at ``scale``x that pixel density, so
+    small text gets many more pixels. This matters when the sketch is later fed
+    to an image model as a visual condition -- a low-res sketch makes the model
+    lose/blur fine text. Default 2x.
 
     ``wait_for_frames`` > 0 waits for that many ``requestAnimationFrame`` ticks
     before the screenshot (needed for WebGL scenes that paint asynchronously).
@@ -68,7 +75,10 @@ def render_html_to_png(
     with sync_playwright() as p:
         browser = p.chromium.launch(args=BROWSER_ARGS)
         try:
-            page = browser.new_page(viewport={"width": width, "height": height})
+            page = browser.new_page(
+                viewport={"width": width, "height": height},
+                device_scale_factor=scale,
+            )
             page.on(
                 "console",
                 lambda msg: console_errors.append(msg.text)

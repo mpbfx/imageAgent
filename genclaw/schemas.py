@@ -36,6 +36,7 @@ from pydantic import (
 class TaskType(str, Enum):
     """Task families. Derived from the four paper benchmarks (ADR 0003)."""
 
+    # 任务族:对应论文的四个 benchmark(ADR 0003)。新增任务族时要同步 renderer/reviewer 的分支。
     composition = "composition"  # GenEval++: object count, layout, relations
     long_text = "long_text"  # LongText-Bench: posters, cards, pages
     physical_reasoning = "physical_reasoning"  # geometry / physics / viewpoint
