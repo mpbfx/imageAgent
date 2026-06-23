@@ -148,8 +148,13 @@ class GraphNodes:
         if state.plan is None:
             return state  # conceptualize 已经挂了,这里没东西可补
         if not self.search.should_search(state.prompt, state.plan.task_type):
+            if self.on_progress:
+                self.on_progress("search", "skipped", None)
             self._record(state, "search", input_summary="skipped (not knowledge-grounded)")
             return state
+
+        if self.on_progress:
+            self.on_progress("search", "starting", {"provider": self.search.name})
 
         try:
             refs = self.search.search(state.prompt)
@@ -168,6 +173,8 @@ class GraphNodes:
             input_summary=f"provider={self.search.name} facts={len(refs)}",
             artifacts=[state.artifacts.plan_path] if state.artifacts else None,
         )
+        if self.on_progress:
+            self.on_progress("search", "done", {"facts": len(refs), "provider": self.search.name})
         return state
 
     def render(self, state: GenClawState) -> GenClawState:

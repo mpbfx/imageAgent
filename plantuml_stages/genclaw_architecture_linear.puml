@@ -1,0 +1,61 @@
+@startuml
+title GenClaw 顺序架构图
+
+top to bottom direction
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "Microsoft YaHei"
+skinparam defaultTextAlignment center
+skinparam ArrowColor #475569
+skinparam component {
+  BorderColor #334155
+  BackgroundColor #F8FAFC
+}
+skinparam database {
+  BorderColor #92400E
+  BackgroundColor #FFF7ED
+}
+skinparam cloud {
+  BorderColor #1D4ED8
+  BackgroundColor #EFF6FF
+}
+
+actor "用户" as User
+
+component "1. CLI 入口\n接收 prompt / 命令\n文件: genclaw/cli.py" as CLI
+component "2. 编排层\n创建运行状态, 调度各阶段\n文件: genclaw/pipeline.py" as Pipeline
+component "3. 认知层\n理解需求, 生成 CanvasPlan\n目录: genclaw/agent" as Agent
+component "4. 可选检索\n补充知识事实\n文件: genclaw/search.py" as Search
+component "5. 代码画布层\nCanvasPlan -> canvas.* -> sketch.png\n目录: genclaw/renderers" as Renderer
+component "6. 图像生成层\n以 sketch 为条件生成 final.png\n目录: genclaw/generators" as Generator
+component "7. 审查层\n检查结构与最终图像\n目录: genclaw/review" as Reviewer
+database "8. 运行产物\noutputs/runs/<run-id>/\nrequest.json / plan.json / canvas.*\nsketch.png / final.png / review.json / trace.jsonl" as Artifacts
+
+User --> CLI : 输入需求
+CLI --> Pipeline : 启动 run
+Pipeline --> Agent : conceptualize
+Agent --> Search : 知识类任务
+Search --> Renderer : 带知识的 CanvasPlan
+Agent --> Renderer : 普通任务的 CanvasPlan
+Renderer --> Generator : sketch.png
+Generator --> Reviewer : final.png
+Reviewer --> Artifacts : 写入审查与最终产物
+
+note right of Agent
+  CanvasPlan 是核心契约:
+  后续渲染和审查都围绕它执行。
+end note
+
+note right of Generator
+  外部服务只出现在相关阶段:
+  LLM 用于认知层,VLM 用于审查层,
+  图像模型用于生成层,Search 用于检索层。
+end note
+
+note right of Reviewer
+  审查不通过且仍有预算时,
+  编排层会进入 revise 后重新渲染。
+end note
+
+@enduml

@@ -64,6 +64,7 @@ def run(
     max_revisions: int = typer.Option(1, "--max-revisions", help="审查重试预算。"),
     use_langgraph: bool = typer.Option(False, "--langgraph", help="改用 LangGraph 驱动。"),
     search_provider: Optional[str] = typer.Option(None, "--search-provider", help="搜索后端:tavily(默认) | serper。"),
+    enable_review: bool = typer.Option(False, "--enable-review", help="启用审查阶段（默认跳过）。"),
 ):
     """为 prompt 跑一次 pipeline,产出完整 run 目录。
 
@@ -73,6 +74,8 @@ def run(
     模板兜底(不跑模型代码)。需要 ANTHROPIC_API_KEY / GOOGLE_API_KEY。
 
     搜索 provider 默认为 Tavily;指定 --search-provider serper 切换到 Serper。
+
+    默认跳过审查阶段;用 --enable-review 启用审查。
     """
     from genclaw.config import ProviderNotConfiguredError
     from genclaw.pipeline import Pipeline
@@ -92,20 +95,24 @@ def run(
         """进度回调:显示当前阶段和状态。"""
         stage_names = {
             "conceptualize": "理解需求",
+            "search": "搜索知识",
             "render": "渲染画布",
             "generate": "生成图像",
             "review": "审查",
             "revise": "修订",
-            "search": "搜索",
         }
         display_stage = stage_names.get(stage, stage)
         if status == "starting":
             print(f"{display_stage}...", end="", flush=True, file=sys.stdout)
+        elif status == "skipped":
+            print(f" [跳过]", file=sys.stdout)
         elif status == "done":
             detail_str = ""
             if details:
                 if stage == "conceptualize" and "objects" in details:
                     detail_str = f" ({details['objects']} 个对象, backend={details['backend']})"
+                elif stage == "search" and "facts" in details:
+                    detail_str = f" (找到 {details['facts']} 条知识, provider={details['provider']})"
                 elif stage == "render" and "backend" in details:
                     detail_str = f" (backend={details['backend']})"
                 elif stage == "generate" and "provider" in details:
@@ -131,7 +138,7 @@ def run(
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     try:
-        state = pipeline.run(prompt, max_revisions=max_revisions, timestamp=timestamp)
+        state = pipeline.run(prompt, max_revisions=max_revisions, timestamp=timestamp, skip_review=not enable_review)
     except ProviderNotConfiguredError as exc:
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=2)
@@ -145,9 +152,12 @@ def run(
         console.print(str(state.run_dir))
         raise typer.Exit(code=1)
 
-    passed = state.review_result.passed if state.review_result else False
+    passed = state.review_result.passed if state.review_result else None
     print(f"\n输出目录: {state.run_dir}", file=sys.stdout)
-    print(f"审查: {'通过' if passed else '未通过'}", file=sys.stdout)
+    if passed is not None:
+        print(f"审查: {'通过' if passed else '未通过'}", file=sys.stdout)
+    else:
+        print(f"审查: 已跳过", file=sys.stdout)
 
 
 @app.command()

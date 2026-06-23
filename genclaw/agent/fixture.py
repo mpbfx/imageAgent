@@ -9,6 +9,7 @@
 * ``three red circles`` -> 3 个红圆的 SVG 构图(GenEval++ 风格)
 * ``poster``            -> HTML 长文海报(LongText-Bench 风格)
 * ``mirror``            -> Three.js 物理推理场景
+* ``菜单`` 或 ``menu``  -> HTML 菜单,knowledge_grounded 任务(搜索测试)
 
 未知 prompt 抛错,绝不悄悄返回一个空白画布——让上层立即看到 fixture 范围
 不足。所有 plan 都是 ``source="structured"``(phase 1)。
@@ -63,9 +64,11 @@ class FixtureAgent(AgentProvider):
             return _poster(prompt, rid)
         if "mirror" in low:
             return _mirror(prompt, rid)
+        if "菜单" in prompt or "menu" in low:
+            return _menu(prompt, rid)
         raise FixtureAgentError(
             f"no fixture plan for prompt {prompt!r}; "
-            "known keywords: 'three red circles', 'poster', 'mirror'"
+            "known keywords: 'three red circles', 'poster', 'mirror', 'menu'"
         )
 
 
@@ -194,5 +197,32 @@ def _mirror(prompt: str, request_id: str) -> CanvasPlan:
         checks=[
             ReviewCheck(kind="backend", expected="three"),
             ReviewCheck(kind="object_count", target="sphere", expected=1),
+        ],
+    )
+
+
+def _menu(prompt: str, request_id: str) -> CanvasPlan:
+    """「菜单」-> HTML 菜单布局，knowledge_grounded 任务(搜索测试)。
+
+    设计特点：task_type=knowledge_grounded，用于演示搜索节点的知识补齐。
+    """
+    base = LayerSpec(id="menu", name="menu", order=0)
+    title = "Restaurant Menu"
+    texts = [
+        TextSpec(id="title", text=title, layer_id="menu", x=40, y=40,
+                 width=400, height=60, font_size=32.0, color="#8B4513", align="center"),
+    ]
+    return CanvasPlan(
+        request_id=request_id,
+        prompt=prompt,
+        task_type=TaskType.knowledge_grounded,
+        backend=CanvasBackend.html,
+        source=CanvasSource.structured,
+        size=CanvasSize(width=480, height=640),
+        layers=[base],
+        text=texts,
+        checks=[
+            ReviewCheck(kind="backend", expected="html"),
+            ReviewCheck(kind="contains_text", expected=title),
         ],
     )

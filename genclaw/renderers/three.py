@@ -52,38 +52,58 @@ def _mesh_js(obj: ObjectSpec) -> str:
     if obj.kind in ("plane", "mirror"):
         size = _vec(a.get("size", [10, 10]), (10, 10))[:2]
         rot = _vec(a.get("rotation"))
+        metalness = a.get("metalness", 1.0 if obj.kind == "mirror" else 0.0)
+        roughness = a.get("roughness", 0.05 if obj.kind == "mirror" else 0.9)
         return (
             f"  {{\n"
             f"    const geo = new THREE.PlaneGeometry({size[0]}, {size[1]});\n"
             f"    const mat = new THREE.MeshStandardMaterial({{ color: {color}, "
             f"side: THREE.DoubleSide, "
-            f"metalness: {1.0 if obj.kind == 'mirror' else 0.0}, "
-            f"roughness: {0.05 if obj.kind == 'mirror' else 0.9} }});\n"
+            f"metalness: {metalness}, "
+            f"roughness: {roughness} }});\n"
             f"    const mesh = new THREE.Mesh(geo, mat);\n"
             f"    mesh.position.set({pos[0]}, {pos[1]}, {pos[2]});\n"
             f"    mesh.rotation.set({rot[0]}, {rot[1]}, {rot[2]});\n"
+            f"    mesh.castShadow = true;\n"
+            f"    mesh.receiveShadow = true;\n"
             f"    mesh.name = {json.dumps(obj.id)};\n"
             f"    scene.add(mesh);\n"
             f"  }}\n"
         )
     if obj.kind == "sphere":
         radius = a.get("radius", 1.0)
+        metalness = a.get("metalness", 0.0)
+        roughness = a.get("roughness", 0.5)
         return (
             f"  {{\n"
             f"    const geo = new THREE.SphereGeometry({radius}, 32, 32);\n"
-            f"    const mat = new THREE.MeshStandardMaterial({{ color: {color} }});\n"
+            f"    const mat = new THREE.MeshStandardMaterial({{ color: {color}, "
+            f"metalness: {metalness}, "
+            f"roughness: {roughness} }});\n"
             f"    const mesh = new THREE.Mesh(geo, mat);\n"
             f"    mesh.position.set({pos[0]}, {pos[1]}, {pos[2]});\n"
+            f"    mesh.castShadow = true;\n"
+            f"    mesh.receiveShadow = true;\n"
             f"    mesh.name = {json.dumps(obj.id)};\n"
             f"    scene.add(mesh);\n"
             f"  }}\n"
         )
     if obj.kind == "directional_light":
         intensity = a.get("intensity", 1.0)
+        shadow_map_size = a.get("shadow_map_size", 2048)
         return (
             f"  {{\n"
             f"    const light = new THREE.DirectionalLight(0xffffff, {intensity});\n"
             f"    light.position.set({pos[0]}, {pos[1]}, {pos[2]});\n"
+            f"    light.castShadow = true;\n"
+            f"    light.shadow.mapSize.width = {shadow_map_size};\n"
+            f"    light.shadow.mapSize.height = {shadow_map_size};\n"
+            f"    light.shadow.camera.near = 0.5;\n"
+            f"    light.shadow.camera.far = 50;\n"
+            f"    light.shadow.camera.left = -20;\n"
+            f"    light.shadow.camera.right = 20;\n"
+            f"    light.shadow.camera.top = 20;\n"
+            f"    light.shadow.camera.bottom = -20;\n"
             f"    scene.add(light);\n"
             f"  }}\n"
         )
@@ -141,10 +161,30 @@ class ThreeRenderer(Renderer):
   const canvas = document.getElementById("scene");
   const renderer = new THREE.WebGLRenderer({{ canvas, antialias: true, preserveDrawingBuffer: true }});
   renderer.setSize({w}, {h}, false);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.0;
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color({bg});
-  scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+
+  // Ambient light for fill
+  scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+
+  // Default directional light if not specified in objects
+  const defaultLight = new THREE.DirectionalLight(0xffffff, 0.8);
+  defaultLight.position.set(5, 8, 5);
+  defaultLight.castShadow = true;
+  defaultLight.shadow.mapSize.width = 2048;
+  defaultLight.shadow.mapSize.height = 2048;
+  defaultLight.shadow.camera.near = 0.5;
+  defaultLight.shadow.camera.far = 50;
+  defaultLight.shadow.camera.left = -20;
+  defaultLight.shadow.camera.right = 20;
+  defaultLight.shadow.camera.top = 20;
+  defaultLight.shadow.camera.bottom = -20;
+  scene.add(defaultLight);
 
 {meshes}{camera}
   let frames = 0;

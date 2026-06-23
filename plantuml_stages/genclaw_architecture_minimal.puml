@@ -1,0 +1,60 @@
+@startuml
+title GenClaw 最简架构图
+
+left to right direction
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "Microsoft YaHei"
+skinparam defaultTextAlignment center
+skinparam ArrowColor #475569
+skinparam component {
+  BorderColor #334155
+  BackgroundColor #F8FAFC
+}
+skinparam database {
+  BorderColor #92400E
+  BackgroundColor #FFF7ED
+}
+skinparam cloud {
+  BorderColor #1D4ED8
+  BackgroundColor #EFF6FF
+}
+
+actor "用户" as User
+
+component "CLI\n接收 prompt / 命令" as CLI
+component "编排层\n驱动生成流程" as Pipeline
+component "认知层\n理解需求并生成 CanvasPlan" as Agent
+component "代码画布层\n生成 canvas 源码并渲染 sketch.png" as Renderer
+component "图像生成层\n根据 sketch 生成 final.png" as Generator
+component "审查层\n检查结构与最终图像" as Reviewer
+
+cloud "外部模型与检索服务\nLLM / 图像模型 / Search" as Services
+
+database "运行产物\nrequest.json\nplan.json\ncanvas.*\nsketch.png\nfinal.png\nreview.json\ntrace.jsonl" as Artifacts
+
+User --> CLI : 输入需求
+CLI --> Pipeline : 启动 run
+Pipeline --> Agent : conceptualize
+Agent --> Services : 调用 LLM / 可选检索
+Agent --> Renderer : CanvasPlan
+Renderer --> Generator : sketch.png
+Generator --> Services : 图像生成 / 编辑
+Generator --> Reviewer : final.png
+Reviewer --> Services : 可选 VLM 审查
+Reviewer --> Pipeline : 通过 / 需要修订
+Pipeline --> Renderer : 未通过且有预算时重画
+
+Pipeline --> Artifacts : 全流程写入
+Agent --> Artifacts : plan.json
+Renderer --> Artifacts : canvas.* / sketch.png
+Generator --> Artifacts : final.png
+Reviewer --> Artifacts : review.json
+
+note bottom of Agent
+  CanvasPlan 是核心契约:
+  认知层产出,画布层和审查层共同消费。
+end note
+
+@enduml

@@ -49,6 +49,42 @@ from genclaw.schemas import CanvasPlan, TaskType
 GLM_AGENT_MAX_TOKENS = 8192
 
 
+def _should_knowledge_ground(prompt: str) -> bool:
+    """启发式判断 prompt 是否涉及知识密集型任务（需要搜索补齐）。
+
+    检测特征：
+    - 时间敏感（年份、"最新"、"最近"、"今年"等）
+    - 具体实体（地名、人名、品牌、电影等）
+    - 文化符号（节日、传统、习俗）
+    - 新闻/事件性（发生、举办、比赛等）
+
+    这个启发式会在 Phase 2 被替换为更复杂的意图识别。
+    """
+    keywords = [
+        # 时间敏感
+        "2026", "2025", "2024", "最新", "最近", "今年", "去年", "明年",
+        "当前", "最新", "实时", "新闻",
+        # 地理/地点
+        "城市", "街景", "地点", "国家", "地区", "场景", "街道",
+        # 文化/事件
+        "节日", "传统", "风俗", "习俗", "文化", "活动", "比赛", "竞赛",
+        "世界杯", "奥运", "展览", "庆典",
+        # 具体实体（需要外部知识）
+        "品牌", "餐厅", "电影", "人物", "名人", "历史人物",
+        # 专业领域
+        "科学", "数学", "物理", "化学", "医学", "法律",
+        # 食物/菜品（需要准确信息）
+        "菜单", "菜品", "食谱", "料理",
+    ]
+
+    prompt_lower = prompt.lower()
+    # 只要匹配到任何关键词，就认为需要知识补齐
+    for kw in keywords:
+        if kw in prompt_lower:
+            return True
+    return False
+
+
 class PlanParseError(RuntimeError):
     """在 ``max_parse_retries`` 预算内仍无法产出合法 CanvasPlan 时抛出。
 
@@ -145,6 +181,11 @@ class ExternalLLMAgent(AgentProvider):
             data.setdefault("prompt", prompt)
             if task_type is not None:
                 data["task_type"] = task_type.value
+            else:
+                # 如果没有显式指定 task_type，用启发式判断是否需要知识补齐。
+                # 这是对论文「智能体主动判断是否搜索」的简化实现（Phase 1）。
+                if _should_knowledge_ground(prompt):
+                    data.setdefault("task_type", TaskType.knowledge_grounded.value)
 
             try:
                 return CanvasPlan.model_validate(data)

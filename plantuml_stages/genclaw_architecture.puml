@@ -1,0 +1,250 @@
+@startuml
+title GenClaw 代码驱动图像生成架构总览
+
+left to right direction
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "Microsoft YaHei"
+skinparam defaultTextAlignment center
+skinparam package {
+  BorderColor #5B6B7A
+  BackgroundColor #F8FAFC
+}
+skinparam node {
+  BorderColor #2F5D62
+  BackgroundColor #EAF6F6
+}
+skinparam database {
+  BorderColor #7A4E00
+  BackgroundColor #FFF6E5
+}
+skinparam artifact {
+  BorderColor #6B7280
+  BackgroundColor #FFFFFF
+}
+skinparam component {
+  BorderColor #334155
+  BackgroundColor #F1F5F9
+}
+
+actor "用户 / CLI 调用者" as User
+
+node "命令行入口\n文件: genclaw/cli.py" as CLI {
+  component "run\n执行完整管道" as CmdRun
+  component "render\n单独渲染 plan" as CmdRender
+  component "review\n复跑规则审查" as CmdReview
+  component "bench\n本地基准冒烟" as CmdBench
+}
+
+node "核心编排\n文件: genclaw/pipeline.py" as Runtime {
+  component "Pipeline.for_mode()\n选择运行模式" as ForMode
+  component "build_providers()\n组装 Agent / Generator / Reviewer / Search" as ProviderBuilder
+  component "Pipeline.run()\n创建状态与产物目录" as PipelineRun
+  component "直接顺序执行\n_run_direct()" as DirectFlow
+  component "LangGraph 执行\n_run_langgraph()" as LangGraphFlow
+}
+
+package "状态与中心契约" as ContractPkg {
+  component "GenClawState\n文件: graph/state.py\n跨节点状态" as State
+  component "CanvasPlan\n文件: schemas.py\nprompt 到画布的中心契约" as Plan
+  component "ReviewCheck / ReviewResult\n声明式验收与审查结果" as ReviewSchema
+}
+
+package "工作流节点\n文件: genclaw/graph/nodes.py" as NodesPkg {
+  component "conceptualize\n提示词 -> CanvasPlan" as NConcept
+  component "search\n知识任务补事实" as NSearch
+  component "render\nPlan -> canvas 源码 + sketch.png" as NRender
+  component "generate\nsketch -> final.png" as NGenerate
+  component "review\n结构/感知审查" as NReview
+  component "revise\n未通过且预算内时回修" as NRevise
+}
+
+package "LangGraph 声明\n文件: graph/builder.py / routes.py" as GraphPkg {
+  component "StateGraph\nconceptualize -> search -> render -> generate -> review" as StateGraph
+  component "route_after_review()\n通过则结束，否则 revise" as Router
+}
+
+package "认知层 Agent\n目录: genclaw/agent" as AgentPkg {
+  component "FixtureAgent\n确定性样例 plan\n无需凭据" as FixtureAgent
+  component "ExternalLLMAgent\nClaude / OpenAI 兼容\nJSON 校验 + 修复重试" as ExternalAgent
+  component "prompts.py\n结构化 / code-as-brush 提示模板" as Prompts
+}
+
+package "检索层\n文件: genclaw/search.py" as SearchPkg {
+  component "NullSearchProvider\n离线 no-op" as NullSearch
+  component "TavilySearchProvider\n知识接地检索" as TavilySearch
+}
+
+package "画布渲染层\n目录: genclaw/renderers" as RendererPkg {
+  component "SVGRenderer\n结构化 SVG" as SvgRenderer
+  component "HTMLRenderer\n长文本 / 海报排版" as HtmlRenderer
+  component "ThreeRenderer\n3D 场景 / 视角" as ThreeRenderer
+  component "PhysicsRenderer\nPython / Canvas 物理草图" as PhysicsRenderer
+  component "CodeRenderer\nsource=code\n模型源码即画笔" as CodeRenderer
+  component "playwright_render.py\n浏览器光栅化到 PNG" as PlaywrightRender
+  component "svg_validate.py\nSVG 静态白名单校验" as SvgValidate
+}
+
+package "上色生成层\n目录: genclaw/generators" as GeneratorPkg {
+  component "MockImageGenerator\nfixture 模式占位成图" as MockGen
+  component "GeminiImageGenerator\n草图条件图像生成" as GeminiGen
+  component "OpenAICompatImageGenerator\n/v1/images/edits 兼容代理" as OpenAICompatGen
+  component "UniAPIImageEditGenerator\nQwen 图像编辑" as UniAPIGen
+}
+
+package "审查层\n目录: genclaw/review" as ReviewPkg {
+  component "RuleReviewer\nbackend / count / text / size\n确定性检查" as RuleReviewer
+  component "VLMReviewer\n最终图像感知审查" as VlmReviewer
+  component "CompositeReviewer\n结构层 + 感知层合并" as CompositeReviewer
+}
+
+cloud "外部服务\n按 .env / ProviderConfig 配置" as ExternalCloud {
+  component "Claude / Anthropic\n认知层与 VLM 审查" as ClaudeAPI
+  component "Gemini 图像模型\n图生图上色" as GeminiAPI
+  component "OpenAI 兼容 / UniAPI\n图像编辑代理" as CompatAPI
+  component "Tavily\n知识检索" as TavilyAPI
+}
+
+database "运行产物目录\noutputs/runs/<timestamp>-<request_id>/" as Artifacts {
+  artifact "request.json\n原始请求" as RequestJson
+  artifact "plan.json\n校验后的 CanvasPlan" as PlanJson
+  artifact "canvas.svg / canvas.html / canvas.py\n可执行画布源码" as CanvasFile
+  artifact "sketch.png\n代码草图光栅图" as SketchPng
+  artifact "final.png\n上色后最终图" as FinalPng
+  artifact "review.json\n审查报告" as ReviewJson
+  artifact "trace.jsonl\n节点追踪日志" as TraceJsonl
+  artifact "error.<stage>.json\n结构化错误" as ErrorJson
+}
+
+database "本地基准与测试" as Quality {
+  artifact "tests/*.py\n单元 / 集成 / 渲染测试" as Tests
+  artifact "outputs/benchmarks\nmini benchmark 输出" as BenchOutputs
+}
+
+User --> CLI : 输入 prompt / plan / run-dir
+CLI --> CmdRun
+CLI --> CmdRender
+CLI --> CmdReview
+CLI --> CmdBench
+
+CmdRun --> ForMode : --mode fixture / external / external-template / external-code
+ForMode --> ProviderBuilder : 选择 provider 栈
+ProviderBuilder --> FixtureAgent : fixture 模式
+ProviderBuilder --> ExternalAgent : external 模式
+ProviderBuilder --> MockGen : fixture 模式
+ProviderBuilder --> GeminiGen : 默认真实图像生成
+ProviderBuilder --> OpenAICompatGen : 代理端点可选
+ProviderBuilder --> UniAPIGen : UniAPI key 可选
+ProviderBuilder --> RuleReviewer : fixture / 结构检查
+ProviderBuilder --> CompositeReviewer : external 模式
+ProviderBuilder --> NullSearch : fixture 默认
+ProviderBuilder --> TavilySearch : external 知识检索
+
+CmdRun --> PipelineRun : 创建 GenClawState 与 RunArtifacts
+PipelineRun --> RequestJson : 写入请求
+PipelineRun --> State : 初始化 request_id / prompt / max_revisions
+PipelineRun --> DirectFlow : 默认路径\n不强依赖 LangGraph
+PipelineRun --> LangGraphFlow : --langgraph
+LangGraphFlow --> StateGraph : 编译并 invoke
+StateGraph --> Router : review 后条件路由
+
+DirectFlow --> NConcept : 1
+NConcept --> NSearch : 2
+NSearch --> NRender : 3
+NRender --> NGenerate : 4
+NGenerate --> NReview : 5
+NReview --> Router : 是否通过 / 是否还有修订预算
+Router --> NRevise : 失败且未超限
+NRevise --> NRender : 修订后重画
+
+NConcept --> FixtureAgent : 离线固定 plan
+NConcept --> ExternalAgent : LLM 输出 JSON / code_source
+ExternalAgent --> Prompts : 使用模板约束输出
+ExternalAgent --> ClaudeAPI : 调用模型
+ExternalAgent --> Plan : Pydantic 校验
+FixtureAgent --> Plan : 构造结构化 plan
+NConcept --> PlanJson : 写入 plan.json
+NConcept --> TraceJsonl : 记录节点事件
+
+NSearch --> NullSearch : 非知识任务或离线 no-op
+NSearch --> TavilySearch : knowledge_grounded
+TavilySearch --> TavilyAPI : 搜索事实
+NSearch --> Plan : 追加 KnowledgeRef
+NSearch --> PlanJson : 重写 plan.json
+NSearch --> TraceJsonl : 记录检索事件
+
+Plan --> NRender : backend + source 决定 renderer
+NRender --> SvgRenderer : backend=svg 且 source=structured
+NRender --> HtmlRenderer : backend=html 且 source=structured
+NRender --> ThreeRenderer : backend=three 且 source=structured
+NRender --> PhysicsRenderer : backend=python / canvas
+NRender --> CodeRenderer : source=code\ncode-as-brush
+CodeRenderer --> SvgValidate : code_lang=svg 时校验
+SvgRenderer --> CanvasFile : 编译源码
+HtmlRenderer --> CanvasFile : 编译源码
+ThreeRenderer --> CanvasFile : 编译源码
+PhysicsRenderer --> CanvasFile : 编译源码
+CodeRenderer --> CanvasFile : 写入模型源码
+SvgRenderer --> PlaywrightRender : 光栅化
+HtmlRenderer --> PlaywrightRender : 光栅化
+ThreeRenderer --> PlaywrightRender : 等待 WebGL 帧后截图
+CodeRenderer --> PlaywrightRender : HTML / Three.js 执行后截图
+PlaywrightRender --> SketchPng : 生成草图
+NRender --> TraceJsonl : 记录渲染产物
+
+NGenerate --> MockGen : fixture 占位最终图
+NGenerate --> GeminiGen : sketch 作为视觉条件
+NGenerate --> OpenAICompatGen : multipart image edit
+NGenerate --> UniAPIGen : Qwen image edit
+GeminiGen --> GeminiAPI : 发送 prompt + sketch
+OpenAICompatGen --> CompatAPI : 发送 prompt + sketch
+UniAPIGen --> CompatAPI : 发送 prompt + sketch
+NGenerate --> FinalPng : 写入最终图
+NGenerate --> TraceJsonl : 记录生成事件
+
+NReview --> RuleReviewer : plan + canvas source\n结构性检查
+NReview --> CompositeReviewer : external 组合审查
+CompositeReviewer --> RuleReviewer : 结构层
+CompositeReviewer --> VlmReviewer : 感知层
+VlmReviewer --> ClaudeAPI : 多模态评审
+RuleReviewer --> ReviewSchema : 汇总 failures / warnings / score
+CompositeReviewer --> ReviewSchema : 合并两层结果
+NReview --> ReviewJson : 写入 review.json
+NReview --> TraceJsonl : 记录审查事件
+
+CmdRender --> PlanJson : 读取已有 plan
+CmdRender --> NRender : 复用 renderer dispatch
+CmdReview --> PlanJson : 读取已有 plan
+CmdReview --> RuleReviewer : 复跑规则审查
+CmdBench --> BenchOutputs : 写 results / summary
+CmdBench --> Tests : 覆盖 mini fixture 回归
+
+NConcept ..> ErrorJson : provider / schema 失败
+NSearch ..> ErrorJson : 检索失败可非致命
+NRender ..> ErrorJson : 渲染失败
+NGenerate ..> ErrorJson : 生成失败
+NReview ..> ErrorJson : 审查失败
+
+note right of CodeRenderer
+  安全注意:
+  source=code 会执行模型生成的 HTML / Three.js JavaScript。
+  当前为本地复现用途,尚未实现完整执行沙箱。
+end note
+
+note bottom of Plan
+  CanvasPlan 是单一中心契约:
+  Agent 产出它,Renderer 消费它,
+  Reviewer 也按它的 checks 验收。
+end note
+
+legend right
+  |= 图形 |= 含义 |
+  | node | 本地运行入口或编排进程 |
+  | package | 代码模块分组 |
+  | cloud | 外部 API / 模型服务 |
+  | database | 持久化产物目录 |
+  | artifact | 真实文件或输出 |
+endlegend
+
+@enduml

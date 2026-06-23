@@ -1,0 +1,131 @@
+@startuml
+title GenClaw 简洁架构图
+
+left to right direction
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "Microsoft YaHei"
+skinparam defaultTextAlignment center
+skinparam package {
+  BorderColor #64748B
+  BackgroundColor #F8FAFC
+}
+skinparam component {
+  BorderColor #334155
+  BackgroundColor #F1F5F9
+}
+skinparam database {
+  BorderColor #92400E
+  BackgroundColor #FFF7ED
+}
+skinparam cloud {
+  BorderColor #1D4ED8
+  BackgroundColor #EFF6FF
+}
+
+actor "用户" as User
+
+component "CLI\n文件: genclaw/cli.py" as CLI
+
+package "核心编排" as Core {
+  component "Pipeline\n文件: pipeline.py\n创建状态、选择 provider、驱动流程" as Pipeline
+  component "工作流节点\n文件: graph/nodes.py" as Nodes
+  component "LangGraph 可选编排\n文件: graph/builder.py / routes.py" as LangGraph
+}
+
+package "中心契约" as Contract {
+  component "GenClawState\n跨节点状态" as State
+  component "CanvasPlan\n提示词到画布的结构化契约" as Plan
+  component "ReviewResult\n审查结果" as ReviewResult
+}
+
+package "认知与检索" as Cognitive {
+  component "ExternalLLMAgent\nprompt -> CanvasPlan / code_source" as Agent
+  component "SearchProvider\n知识接地检索" as Search
+}
+
+package "代码画布层" as Canvas {
+  component "Renderer Dispatch\n按 backend/source 选择渲染器" as Dispatch
+  component "SVG / HTML / Three.js / Python / Canvas Renderer\n生成可执行画布源码" as Renderers
+  component "CodeRenderer\ncode-as-brush: 模型源码即画笔" as CodeRenderer
+  component "Playwright Rasterizer\n源码 -> sketch.png" as Rasterizer
+}
+
+package "上色与审查" as ColorReview {
+  component "ImageGenerator\n以 sketch 为视觉条件生成 final.png" as Generator
+  component "RuleReviewer\n结构性检查" as RuleReviewer
+  component "VLMReviewer / CompositeReviewer\n最终图像感知审查" as VLMReviewer
+}
+
+cloud "外部模型 / 服务" as Cloud {
+  component "Claude / OpenAI 兼容\n认知与 VLM 审查" as LLM
+  component "Gemini / OpenAI 兼容 / UniAPI\n图像生成或编辑" as ImageAPI
+  component "Tavily\n知识检索" as Tavily
+}
+
+database "运行产物\noutputs/runs/<run-id>/" as Artifacts {
+  artifact "request.json" as RequestJson
+  artifact "plan.json" as PlanJson
+  artifact "canvas.*" as CanvasFile
+  artifact "sketch.png" as Sketch
+  artifact "final.png" as Final
+  artifact "review.json" as ReviewJson
+  artifact "trace.jsonl" as Trace
+}
+
+User --> CLI : 输入 prompt / 命令
+CLI --> Pipeline : run / render / review / bench
+Pipeline --> State : 初始化请求状态
+Pipeline --> LangGraph : 可选使用 --langgraph
+Pipeline --> Nodes : 默认直接执行同一组节点
+
+Nodes --> Agent : conceptualize\n理解意图并产出计划
+Agent --> LLM : 调用大模型
+Agent --> Plan : Pydantic 校验
+Plan --> PlanJson : 写入计划
+
+Nodes --> Search : search\n知识任务补事实
+Search --> Tavily : 可选检索
+Search --> Plan : 追加 KnowledgeRef
+
+Nodes --> Dispatch : render\n选择画布后端
+Dispatch --> Renderers : source=structured
+Dispatch --> CodeRenderer : source=code
+Renderers --> CanvasFile : 写入画布源码
+CodeRenderer --> CanvasFile : 写入模型生成源码
+CanvasFile --> Rasterizer : 浏览器/本地渲染
+Rasterizer --> Sketch : 生成代码草图
+
+Nodes --> Generator : generate\n草图作为结构条件
+Generator --> ImageAPI : 图生图 / 图像编辑
+Generator --> Final : 写入最终图
+
+Nodes --> RuleReviewer : review\n检查 plan 与 canvas
+Nodes --> VLMReviewer : review\n检查 final.png
+VLMReviewer --> LLM : 多模态评审
+RuleReviewer --> ReviewResult
+VLMReviewer --> ReviewResult
+ReviewResult --> ReviewJson : 写入审查报告
+
+Nodes --> Trace : 每个节点记录 trace
+CLI --> RequestJson : 写入原始请求
+
+note bottom of Plan
+  CanvasPlan 是核心边界:
+  上游 Agent 产出,下游 Renderer 和 Reviewer 共同消费。
+end note
+
+note right of CodeRenderer
+  code-as-brush 会执行模型生成的 HTML / Three.js 代码;
+  当前适合本地可信输入,公开部署前需要沙箱。
+end note
+
+legend right
+  |= 元素 |= 含义 |
+  | component | 代码模块 / 核心职责 |
+  | cloud | 外部 API |
+  | database | 本地持久化产物 |
+endlegend
+
+@enduml

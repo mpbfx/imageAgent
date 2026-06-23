@@ -28,7 +28,7 @@ from genclaw.graph.state import GenClawState
 from genclaw.review.base import Reviewer
 from genclaw.review.rules import RuleReviewer
 from genclaw.schemas import TaskType
-from genclaw.search import NullSearchProvider, SearchProvider, TavilySearchProvider
+from genclaw.search import NullSearchProvider, SearchProvider, SerperSearchProvider, TavilySearchProvider
 
 
 def _new_request_id(prompt: str, counter: int) -> str:
@@ -37,28 +37,36 @@ def _new_request_id(prompt: str, counter: int) -> str:
     return f"{slug or 'run'}-{counter:03d}"
 
 
-def build_providers(mode: str):
+def build_providers(mode: str, search_provider: Optional[str] = None):
     """按 mode 构造 (agent, generator, reviewer, search)。
 
     * ``fixture``  —— 确定性、无需凭据(FixtureAgent + mock + rules
-      + null search)。
+      + null search,除非指定 search_provider)。
     * ``external`` —— 与论文对齐的栈(ADR 0004),默认 *code-as-brush*:
       LLM 直接写 SVG / HTML / Three.js 源码(论文核心机制)。Claude-Opus
-      agent、图像生成器、VLM 审查者、Tavily 搜索。凭据缺失时 adapter
-      抛 :class:`ProviderNotConfiguredError`。
+      agent、图像生成器、VLM 审查者、搜索 provider(默认 Tavily,可选 Serper)。
+      凭据缺失时 adapter 抛 :class:`ProviderNotConfiguredError`。
     * ``external-template`` —— 同样的栈,但 agent 产*结构化*模板
       plan,不再产自由形式代码。是确定性兜底 / 基线,不会执行模型
       写的代码。
     * ``external-code`` —— ``external`` 的显式别名(code-as-brush)。
 
+    ``search_provider`` 指定搜索后端:'tavily' (默认外部) 或 'serper'。
+    在 fixture 模式下省略此参数时仍用 NullSearchProvider。
+
     返回 4 元组;未知 mode 抛 ValueError。
     """
     if mode == "fixture":
+        search = NullSearchProvider()
+        if search_provider == "serper":
+            search = SerperSearchProvider()
+        elif search_provider == "tavily":
+            search = TavilySearchProvider()
         return (
             FixtureAgent(),
             MockImageGenerator(),
             RuleReviewer(),
-            NullSearchProvider(),
+            search,
         )
     if mode in ("external", "external-code", "external-template"):
         from genclaw.agent.external import ExternalLLMAgent
@@ -90,11 +98,18 @@ def build_providers(mode: str):
         # external-template 走结构化模板路径。
         code_mode = mode != "external-template"
         agent = ExternalLLMAgent(code_mode=code_mode)
+
+        # 按 search_provider 参数选搜索后端
+        if search_provider == "serper":
+            search = SerperSearchProvider()
+        else:
+            search = TavilySearchProvider()
+
         return (
             agent,
             generator,
             reviewer,
-            TavilySearchProvider(),
+            search,
         )
     raise ValueError(
         f"unknown mode {mode!r}; expected 'fixture', 'external', "
@@ -133,9 +148,13 @@ class Pipeline:
         base_dir: str | Path = "outputs/runs",
         use_langgraph: bool = False,
         on_progress: Optional[Callable[[str, str, Optional[dict]], None]] = None,
+        search_provider: Optional[str] = None,
     ) -> "Pipeline":
-        """按 ``mode`` 选好 provider 栈再构造 Pipeline。"""
-        agent, generator, reviewer, search = build_providers(mode)
+        """按 ``mode`` 选好 provider 栈再构造 Pipeline。
+
+        ``search_provider`` 指定搜索后端:'tavily' (默认) 或 'serper'。
+        """
+        agent, generator, reviewer, search = build_providers(mode, search_provider=search_provider)
         return cls(
             agent,
             generator,
@@ -154,11 +173,15 @@ class Pipeline:
         *,
         request_id: Optional[str] = None,
         timestamp: str = "00000000-000000",
+        skip_review: Optional[bool] = None,
     ) -> GenClawState:
         """为 ``prompt`` 跑一次 pipeline,返回最终 state。
 
         ``timestamp`` 由调用方注入(不读时钟),用于产出可复现的
         run 目录;想要真实时间戳的调用方自己传一个进来。
+
+        ``skip_review`` 控制是否跳过审查阶段。None 时根据 agent 类型
+        自动决定（fixture 默认跳过,external 默认运行）。
         """
         self._counter += 1
         rid = request_id or _new_request_id(prompt, self._counter)
@@ -185,13 +208,18 @@ class Pipeline:
             timestamp=timestamp,
             on_progress=self.on_progress,
         )
+
+        # 默认行为：所有模式都跳过审查，除非显式指定
+        if skip_review is None:
+            skip_review = True
+
         if self.use_langgraph:
-            final = self._run_langgraph(nodes, state)
+            final = self._run_langgraph(nodes, state, skip_review=skip_review)
         else:
-            final = self._run_direct(nodes, state)
+            final = self._run_direct(nodes, state, skip_review=skip_review)
         return final
 
-    def _run_direct(self, nodes: GraphNodes, state: GenClawState) -> GenClawState:
+    def _run_direct(self, nodes: GraphNodes, state: GenClawState, skip_review: bool = False) -> GenClawState:
         """直接按顺序执行节点,镜像 LangGraph 的边和路由。"""
         state = nodes.conceptualize(state)
         if state.plan is None:  # conceptualize 失败;停,error 已写。
@@ -202,6 +230,9 @@ class Pipeline:
         while True:
             state = nodes.render(state)
             state = nodes.generate(state)
+            if skip_review:
+                # 跳过审查,直接返回
+                break
             state = nodes.review(state)
             if route_after_review(state) == REVISE:
                 revision += 1
@@ -216,7 +247,7 @@ class Pipeline:
             break
         return state
 
-    def _run_langgraph(self, nodes: GraphNodes, state: GenClawState) -> GenClawState:
+    def _run_langgraph(self, nodes: GraphNodes, state: GenClawState, skip_review: bool = False) -> GenClawState:
         from genclaw.graph.builder import build_graph
 
         graph = build_graph(nodes)

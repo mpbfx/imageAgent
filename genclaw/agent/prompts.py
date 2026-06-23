@@ -63,6 +63,40 @@ kinds and how to fill them:
 - {"kind": "artifact_exists", "target": "<path>"}
 Do NOT invent other kinds (no "size", "required_text", "element_count", etc.).
 
+BACKEND-SPECIFIC GUIDANCE:
+
+SVG (structural composition, spatial relations, object counts):
+- Use objects array for all shapes (circles, rectangles, ellipses, polygons).
+- Set x, y, width, height for each object in absolute coordinates.
+- For circles, put radius in attributes: {"radius": 40}.
+- Use fill and stroke for colors; colors should be CSS color names or #rrggbb.
+- Relations array captures "left_of", "above", "occludes", etc. for review.
+- The SVG renderer will compile these into properly defined <defs>, <g> groups,
+  and styled elements. Do NOT put SVG source in code_source; use structured fields.
+
+HTML (text-driven layout, documents, cards, menus):
+- Use text array for all visible strings (titles, paragraphs, labels).
+- Use objects array for decorative shapes (dividers, boxes, backgrounds).
+- Set x, y, width, height for text placement.
+- The HTML renderer will use flexbox/grid layout, apply font stacks, and ensure
+  proper text wrapping and alignment. All text must be in the text array.
+
+Three.js (3D geometry, physics, lighting, viewpoint):
+- Use objects array to describe 3D primitives: spheres, boxes, etc.
+- Include material properties: kind="sphere" with attributes like
+  {"radius": 1, "material": "reflective", "metalness": 0.9, "roughness": 0.1}.
+- The Three.js renderer will compile geometry, set up MeshStandardMaterial with
+  proper metalness/roughness, enable shadow maps, position lights, and configure
+  environment maps for reflective surfaces.
+- Specify camera position and lighting in the plan so renderer can set proper
+  shadow.mapSize, shadow.camera bounds, and envMap settings.
+
+Python (numeric sketches, matplotlib/plotly):
+- Use objects array to describe data series or plot elements.
+- attributes can include: {"type": "line", "data": [...], "label": "...", "color": "..."}
+- The Python renderer will generate matplotlib code with proper figure sizing,
+  DPI, axis labels, legends, and colorblind-friendly palettes.
+
 CRITICAL self-consistency rule for object_count checks: `expected` MUST equal
 the number of objects in your `objects` array whose `kind` matches `target`.
 These checks verify the compiled canvas against your OWN plan, so an `expected`
@@ -78,10 +112,42 @@ markdown fences or add commentary. Required fields: request_id, prompt,
 task_type, backend, size. Use source="structured" with explicit
 layers/objects/text/relations unless instructed to emit free-form code.
 
-Worked example (a long-text poster). Note the text lives in `text`, and every
-check kind matches the allowed list:
+BACKEND-SPECIFIC EXAMPLES:
+
+SVG (composition, spatial relations):
 {{
-  "request_id": "example-1",
+  "request_id": "three-circles-001",
+  "prompt": "three circles: red on left, green in center, blue on right",
+  "task_type": "composition",
+  "backend": "svg",
+  "source": "structured",
+  "size": {{"width": 600, "height": 400}},
+  "layers": [{{"id": "shapes", "order": 0}}],
+  "objects": [
+    {{"id": "red_circle", "kind": "circle", "layer_id": "shapes", "x": 100,
+      "y": 200, "width": 100, "height": 100, "fill": "#ff0000",
+      "attributes": {{"radius": 50}}}},
+    {{"id": "green_circle", "kind": "circle", "layer_id": "shapes", "x": 250,
+      "y": 200, "width": 100, "height": 100, "fill": "#00aa00",
+      "attributes": {{"radius": 50}}}},
+    {{"id": "blue_circle", "kind": "circle", "layer_id": "shapes", "x": 400,
+      "y": 200, "width": 100, "height": 100, "fill": "#0000ff",
+      "attributes": {{"radius": 50}}}}
+  ],
+  "relations": [
+    {{"subject_id": "red_circle", "relation": "left_of", "object_id": "green_circle"}},
+    {{"subject_id": "green_circle", "relation": "left_of", "object_id": "blue_circle"}}
+  ],
+  "checks": [
+    {{"kind": "backend", "expected": "svg"}},
+    {{"kind": "object_count", "target": "circle", "expected": 3}},
+    {{"kind": "image_size", "expected": "600x400"}}
+  ]
+}}
+
+HTML (long text, documents, menus):
+{{
+  "request_id": "poster-001",
   "prompt": "poster titled Hello with one subtitle",
   "task_type": "long_text",
   "backend": "html",
@@ -103,6 +169,39 @@ check kind matches the allowed list:
     {{"kind": "image_size", "expected": "800x1100"}}
   ]
 }}
+
+Three.js (3D geometry, physics, reflections):
+{{
+  "request_id": "mirror-spheres-001",
+  "prompt": "two reflective spheres in front of a mirror with lighting",
+  "task_type": "physical_reasoning",
+  "backend": "three",
+  "source": "structured",
+  "size": {{"width": 1024, "height": 768}},
+  "layers": [],
+  "objects": [
+    {{"id": "sphere1", "kind": "sphere", "x": 2, "y": 1, "z": 0,
+      "attributes": {{"radius": 1, "metalness": 0.9, "roughness": 0.1}}}},
+    {{"id": "sphere2", "kind": "sphere", "x": -2, "y": 1, "z": 0,
+      "attributes": {{"radius": 1, "metalness": 0.9, "roughness": 0.1}}}},
+    {{"id": "mirror", "kind": "plane", "x": 0, "y": 0, "z": -3,
+      "width": 10, "height": 10,
+      "attributes": {{"metalness": 0.95, "roughness": 0.05}}}}
+  ],
+  "checks": [
+    {{"kind": "backend", "expected": "three"}},
+    {{"kind": "object_count", "target": "sphere", "expected": 2}}
+  ]
+}}
+
+CRITICAL RULES:
+- Every visible object must be in `objects` array with explicit x, y, width, height.
+- Every visible text must be in `text` array; do NOT put text in objects.
+- For THREE.js: include metalness/roughness in attributes for reflective surfaces.
+  Renderer will configure MeshStandardMaterial, shadows, and environment maps.
+- All checks must match what you actually placed; count your objects before
+  writing the expected value.
+- Use source="structured" (default) unless explicitly instructed to use "code" mode.
 
 Now produce the plan for this request.
 Task type: {task_type}
@@ -144,6 +243,12 @@ what the backend is fundamentally good at:
   wrapping, and font handling come out clean automatically. If the task is mostly
   "lay out text/records nicely", it is HTML. This is the default for text-heavy
   work.
+  QUALITY CHECKLIST: inline all critical CSS to avoid external dependencies;
+  use flexbox/grid for layout, not absolute positioning; ensure text color
+  contrast is sufficient (WCAG AA minimum); use semantic HTML (h1/h2, article,
+  section) for structure; test that multi-line text wraps correctly; ensure
+  padding/margin is consistent throughout.
+
 - "svg": choose this for GEOMETRIC / VECTOR content placed by absolute
   coordinates -- shape composition, object counts, spatial relations, charts and
   diagrams, icons. Use SVG when the meaning lives in shapes and their positions,
@@ -151,15 +256,52 @@ what the backend is fundamentally good at:
   layout engine, so you must hand-compute every x/y, and text rows / right-aligned
   values / dotted leaders will come out uneven. If you find yourself manually
   positioning many lines of text, switch to HTML.
-- "three": choose this for 3D -- geometry, physics, lighting, viewpoint/depth.
+  QUALITY CHECKLIST: use <g> for grouping related shapes; define all colors
+  and gradients in <defs>; use viewBox for responsiveness; place text elements
+  with explicit x/y and text-anchor; stroke-width should scale proportionally;
+  avoid nested transforms; ensure all coordinates and dimensions are exact.
+
+- "python": choose this for matplotlib/plotly-style NUMERIC SKETCHES of physics,
+  mathematics, or quantitative diagrams. Render static PNG via matplotlib with
+  properly labeled axes, legends, and annotations. NOT for artistic drawing.
+  QUALITY CHECKLIST: set figure size and DPI for clarity (figsize=(w/100, h/100),
+  dpi=100); use tight_layout() to prevent label cutoff; add grid/axis labels;
+  use colorblind-friendly palettes (viridis, colorblind mode); ensure all numeric
+  ranges are legible; save with transparent background only if background is
+  explicitly requested.
+
+- "three": choose this for 3D -- geometry, physics, lighting, viewpoint/depth,
+  reflections, shadows. Use THREE.js for interactive or complex 3D visualization.
+  CRITICAL for quality THREE.js rendering:
+    * Materials: use MeshStandardMaterial (metalness/roughness) for physically
+      correct rendering, NOT MeshPhongMaterial. For reflective/mirrored surfaces,
+      set metalness >= 0.8 and roughness <= 0.1.
+    * Lighting: always include THREE.DirectionalLight (for shadows) + AmbientLight
+      (for fill). Adjust shadow.mapSize (2048 or higher for detail), shadow.camera
+      bounds, and shadow.bias to eliminate artifacts. Position light to illuminate
+      key features.
+    * Environment: if scene has reflective/metallic surfaces, compute or set
+      envMap via CubeCamera or precomputed cubemap. Without envMap, metallic
+      surfaces will be dark and unrealistic.
+    * Shadows: enable renderer.shadowMap, set castShadow/receiveShadow on meshes.
+      Bare geometry without shadows looks flat.
+    * Camera: set near/far clip planes appropriately (near=0.1, far=1000 is typical);
+      position camera to show all objects; use lookAt to ensure focus is correct.
+    * Render loop: set window.__gcRendered = true after initial frames render so
+      screenshot knows when to capture (typically after 10-20 frames).
+    * DO NOT use BasicMaterial, PlaneGeometry for visible surfaces, or raw
+      unlit geometry. DO NOT forget shadows/lighting -- a scene with only geometry
+      but no lights is invisible or dull.
+    * Canvas sizing: must match requested width/height exactly; use
+      renderer.setPixelRatio(1) for 1:1 mapping.
 
 Tie-breaker: if a task could be argued either way, ask "is this mainly arranging
 TEXT, or mainly placing SHAPES?" Text -> html. Shapes -> svg.
 
 Return ONLY a single JSON object with these fields:
 - request_id, prompt, task_type ("composition"|"long_text"|"physical_reasoning"
-  |"editing"|"knowledge_grounded"), backend ("svg"|"html"|"three"),
-  source ("code"), code_lang ("svg"|"html"|"three"),
+  |"editing"|"knowledge_grounded"), backend ("svg"|"html"|"three"|"python"),
+  source ("code"), code_lang ("svg"|"html"|"three"|"python"),
   size {"width":int,"height":int}, and
   code_source: a COMPLETE, self-contained document as a string.
 
@@ -169,6 +311,9 @@ Per code_lang, code_source must be:
         external/network refs (href/url() only point in-document via #id).
 - html: a complete <!doctype html> document. Inline all CSS. Put every required
         text string literally in the markup.
+- python: a complete Python script that uses matplotlib/plotly. Must call
+        plt.savefig() with output_path argument (will be injected by renderer).
+        Use deterministic random seeds if random() needed. No interactive mode.
 - three: a complete <!doctype html> document that imports three.js from a CDN
         (e.g. https://unpkg.com/three@0.160.0/build/three.module.js), builds the
         scene, and renders it. Set `window.__gcRendered = true` after the first
@@ -190,8 +335,55 @@ rasterization.
 CODE_DEVELOPER_PROMPT = """\
 Return ONLY the JSON object (no markdown fences, no commentary). The
 code_source field must contain a complete, self-contained document matching the
-chosen code_lang: SVG for "svg", HTML/CSS for "html", or a Three.js HTML host
-page for "three".
+chosen code_lang: SVG for "svg", HTML/CSS for "html", Python for "python", or
+a Three.js HTML host page for "three".
+
+BACKEND-SPECIFIC REQUIREMENTS:
+
+SVG:
+- Define all colors, gradients, patterns in <defs> at the top.
+- Use absolute coordinates for every element; all x/y/width/height must be
+  explicit numbers.
+- Group related shapes with <g>; set class or id for styling.
+- Text: use <text> with x, y, text-anchor attributes; do NOT rely on wrapping.
+- No external images, no href to external URLs, no <script> blocks.
+- All strokes and fills must be inline or defined in <defs>.
+
+HTML:
+- All CSS must be <style> inline in <head>; no external stylesheets.
+- Use semantic tags: <header>, <main>, <section>, <article>, <footer>.
+- Flexbox (display: flex) or CSS Grid for layout; avoid absolute positioning
+  unless absolutely necessary.
+- Every text string visible in the output must be in the HTML markup, not
+  generated by JS.
+- Fonts: for CJK text, use the font stack provided in the system prompt.
+- Ensure sufficient color contrast for readability.
+- Canvas size (if used) must match requested width/height exactly.
+
+Python (matplotlib/plotly):
+- Use plt.savefig(output_path, dpi=100, bbox_inches='tight') to save.
+  The `output_path` variable will be injected by the renderer.
+- Set figure size: fig = plt.figure(figsize=(w/100, h/100), dpi=100) where w/h
+  are the requested pixel dimensions.
+- Add axis labels, title, and legend where appropriate.
+- Use colorblind-friendly palettes (viridis, cividis, etc.).
+- Set random seed (np.random.seed(42)) if any randomness is needed.
+- All plots must be deterministic.
+
+Three.js:
+- Use MeshStandardMaterial for all visible geometry (metalness/roughness-based
+  physically correct rendering).
+- ALWAYS include: AmbientLight (fill), DirectionalLight (shadows), and proper
+  shadow configuration (shadowMap enabled, shadow.mapSize >= 2048).
+- For reflective/metallic surfaces (mirrors, polished spheres): set metalness >= 0.8,
+  roughness <= 0.1, and compute/set envMap (environment map).
+- Camera: set perspectiveCamera with proper near/far, position it to show all
+  objects, call lookAt() to focus.
+- Canvas: create with renderer.setSize(width, height); set renderer.setPixelRatio(1).
+- Render loop: call requestAnimationFrame and set window.__gcRendered = true
+  after initial frames (e.g., after 10-20 frames).
+- Do NOT use unlit geometry, BasicMaterial, or scenes with no lights.
+- Ensure all objects cast and/or receive shadows (mesh.castShadow = true).
 
 Task type: {task_type}
 Request id: {request_id}
