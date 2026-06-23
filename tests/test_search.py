@@ -28,7 +28,7 @@ def _kg_plan(request_id="kg-1"):
 class StubAgent:
     """Returns a fixed knowledge-grounded plan regardless of prompt."""
 
-    def conceptualize(self, prompt, task_type=None, request_id=None):
+    def conceptualize(self, prompt, task_type=None, request_id=None, knowledge=None):
         return _kg_plan(request_id or "kg-1")
 
 

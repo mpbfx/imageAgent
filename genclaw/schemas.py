@@ -144,11 +144,14 @@ class KnowledgeRef(BaseModel):
     会调用搜索工具补全相关事实,从而填补认知空白")。``source`` 记录
     URL / 来源,review 层可以据此回溯并核验检索到的内容(论文 §3.1:
     "核验搜索工具所检索 URL 内容的准确性")。
+    ``image_url`` 是可选的参考图片 URL,用于图像搜索结果(非论文原始设计,
+    用于写实实体类任务的 img2img 参考)。
     """
 
     claim: str
     source: Optional[str] = None
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    image_url: Optional[str] = None
 
 
 class ReasoningStep(BaseModel):

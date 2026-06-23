@@ -109,12 +109,17 @@ def _format_knowledge(knowledge: Optional[list], max_refs: int = 3) -> str:
     """
     if not knowledge:
         return ""
+    # 只注入文本类知识;图片参考(image_url)是给图像生成器做 img2img 用的,
+    # 文本 LLM 看不了图,注入它们的标题只会增加噪音。
+    text_refs = [k for k in knowledge if not getattr(k, "image_url", None)]
+    if not text_refs:
+        return ""
     lines = [
         "",
         "REFERENCE FACTS (top search results for the named entity; use these",
         "to depict its REAL appearance instead of guessing):",
     ]
-    for ref in list(knowledge)[:max_refs]:
+    for ref in text_refs[:max_refs]:
         claim = (getattr(ref, "claim", None) or "").strip().replace("\n", " ")
         claim = claim[:150] + ("..." if len(claim) > 150 else "")
         if not claim:

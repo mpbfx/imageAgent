@@ -68,6 +68,32 @@ def _renderer_for_plan(plan: CanvasPlan) -> Renderer:
     return _renderer_for(plan.backend)
 
 
+def _download_reference_image(plan: CanvasPlan, run_dir) -> Optional[Path]:
+    """从 plan.knowledge 取第一张参考图 URL,下载到 run_dir/reference.png。
+
+    没有图片 URL、下载失败、或没有 run_dir 时返回 None(静默退回 code sketch)。
+    仅用标准库 urllib,避免给 core 增加依赖。
+    """
+    if run_dir is None:
+        return None
+    image_url = next((k.image_url for k in plan.knowledge if k.image_url), None)
+    if not image_url:
+        return None
+    try:
+        import urllib.request
+
+        dest = Path(run_dir) / "reference.png"
+        req = urllib.request.Request(image_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = resp.read()
+        if not data:
+            return None
+        dest.write_bytes(data)
+        return dest
+    except Exception:
+        return None
+
+
 class GraphNodes:
     """节点函数用到的所有 providers 都放这里。
 
@@ -220,12 +246,22 @@ class GraphNodes:
         return state
 
     def generate(self, state: GenClawState) -> GenClawState:
-        """把 code sketch 当视觉条件喂给 :class:`ImageGenerator` 出 final。"""
+        """把 code sketch 当视觉条件喂给 :class:`ImageGenerator` 出 final。
+
+        如果 plan.knowledge 里有图片 URL(通过 Serper 图片搜索取得的真实参考图),
+        优先把第一张参考图下载下来作为 img2img 的视觉条件——真实照片比代码草图
+        更接近真实外观,对写实实体类任务更有帮助。没有参考图时退回 code sketch。
+        """
         if self.on_progress:
             self.on_progress("generate", "starting", None)
         if state.rendered_canvas is None or state.artifacts is None:
             return self._fail(state, "generate", ValueError("nothing to generate from"))
         sketch = state.rendered_canvas.png_path or state.artifacts.sketch_path
+        # 若 knowledge 里有真实参考图,下载并替换 sketch
+        if state.plan is not None:
+            ref = _download_reference_image(state.plan, state.artifacts.run_dir)
+            if ref is not None:
+                sketch = ref
         # 透传 task_type 给生成器,让生成器按任务族选 rerender 强度:
         # 文字密集 -> 温柔(保字形);材质/场景 -> 强写实
         constraints = {}

@@ -190,4 +190,39 @@ class SerperSearchProvider(SearchProvider):
                     confidence=1.0,  # Serper 不提供 score,默认满信度
                 )
             )
+
+        # 额外拉一组图片结果(/images 端点),给写实实体类任务做 img2img 参考。
+        # 失败不致命:文本结果已经够用,图片只是增强。
+        try:
+            img_refs = self._search_images(query, max_results=min(max_results, 5))
+            refs.extend(img_refs)
+        except Exception:
+            pass
         return refs
+
+    def _search_images(self, query: str, *, max_results: int = 5) -> list[KnowledgeRef]:
+        """调用 Serper /images 端点,返回带 ``image_url`` 的 KnowledgeRef。"""
+        import requests
+
+        url = f"{self.base_url}/images"
+        headers = {"X-API-KEY": self._api_key, "Content-Type": "application/json"}
+        payload = {"q": query, "num": max_results}
+        resp = requests.post(url, headers=headers, json=payload, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+
+        refs = []
+        for item in data.get("images", [])[:max_results]:
+            img_url = item.get("imageUrl") or item.get("imageurl")
+            if not img_url:
+                continue
+            refs.append(
+                KnowledgeRef(
+                    claim=item.get("title", "reference image"),
+                    source=item.get("link") or item.get("source"),
+                    confidence=1.0,
+                    image_url=img_url,
+                )
+            )
+        return refs
+
