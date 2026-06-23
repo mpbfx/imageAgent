@@ -82,28 +82,35 @@ def _neutral_canvas(run_dir, width: int, height: int) -> Path:
 
 
 def _download_reference_image(plan: CanvasPlan, run_dir) -> tuple[Optional[Path], Optional[str]]:
-    """从 plan.knowledge 取第一张参考图 URL,下载到 run_dir/reference.png。
+    """从 plan.knowledge 遍历 image_url,下载第一张有效图片到 run_dir/reference.png。
 
+    - 下载后用 Pillow 校验并重编码成 PNG,避免 HTML 错误页/WebP/格式不匹配。
+    - 校验失败则跳过,继续尝试下一个 URL。
     返回 (path, None) 成功;(None, error_msg) 失败。
     """
     if run_dir is None:
         return None, "no run_dir"
-    image_url = next((k.image_url for k in plan.knowledge if k.image_url), None)
-    if not image_url:
+    image_urls = [k.image_url for k in plan.knowledge if k.image_url]
+    if not image_urls:
         return None, "no image_url in knowledge"
-    try:
-        import urllib.request
 
-        dest = Path(run_dir) / "reference.png"
-        req = urllib.request.Request(image_url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            data = resp.read()
-        if not data:
-            return None, f"empty response from {image_url}"
-        dest.write_bytes(data)
-        return dest, None
-    except Exception as exc:
-        return None, f"download failed ({image_url}): {exc}"
+    import io
+    import urllib.request
+
+    dest = Path(run_dir) / "reference.png"
+    errors = []
+    for url in image_urls:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                data = resp.read()
+            from PIL import Image
+            img = Image.open(io.BytesIO(data)).convert("RGB")
+            img.save(dest, format="PNG")
+            return dest, None
+        except Exception as exc:
+            errors.append(f"{url}: {exc}")
+    return None, "; ".join(errors[:2])  # 只返回头两条错误避免过长
 
 
 class GraphNodes:
