@@ -54,8 +54,10 @@ _NAMED_ENTITY_SIGNALS = (
     r"\b[A-Z][a-z]+(?:\s+[A-Z][a-zA-Z]*){1,}",
     # camelCase / 内部大写的词(品牌名常见),如 "iPhone"、"GranTurismo"、"macOS"
     r"\b[a-zA-Z]*[a-z][A-Z][a-zA-Z]*",
-    # 首字母大写词 + 紧跟的数字型号,如 "Model 3"、"RTX 4090"
-    r"\b[A-Z][a-zA-Z]*\s+\d",
+    # 型号代码:大写词 + 空格或连字符 + 数字,如 "Model 3"、"RTX 4090"、"IN-14"、"GTX-1080"
+    r"\b[A-Z][A-Za-z]*[\s-]\d",
+    # 全大写缩写(≥2 字母,品牌/型号/标准名),如 "SAM"、"NASA"、"BMW"、"IN14"
+    r"\b[A-Z]{2,}\d*\b",
 )
 
 
