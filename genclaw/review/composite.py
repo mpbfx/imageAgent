@@ -75,8 +75,11 @@ class CompositeReviewer(Reviewer):
         # 方便下游日志一眼区分是哪一层报的。
         failures = [f"[structural] {f}" for f in structural.failures]
         warnings = [f"[structural] {w}" for w in structural.warnings]
-        scores = [structural.score]
-        passed = structural.passed
+        # 结构层没有可评估 check 时(code-as-brush 模式 checks 通常为空),
+        # 不把 score=0 算进平均——用 0 拖平均是误判,不反映真实质量。
+        structural_has_checks = bool(structural.failures or structural.score > 0)
+        scores = [structural.score] if structural_has_checks else []
+        passed = structural.passed if structural_has_checks else True
 
         if self.perceptual is not None and image_path is not None:
             # 感知层同时拿到 canvas 源码(辅助上下文)和最终图像(主体)
