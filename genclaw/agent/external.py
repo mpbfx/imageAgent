@@ -101,30 +101,26 @@ class PlanParseError(RuntimeError):
         )
 
 
-def _format_knowledge(knowledge: Optional[list]) -> str:
-    """把 pre-search 检索到的 KnowledgeRef 列表格式化成可注入 prompt 的文本块。
+def _format_knowledge(knowledge: Optional[list], max_refs: int = 3) -> str:
+    """把 pre-search 检索到的 KnowledgeRef 格式化成可注入 prompt 的文本块。
 
-    没有知识时返回空串(模板里的 {knowledge_context} 槽就什么也不显示)。
-    有知识时给出带来源的事实清单,并明确指示 LLM 据此画出真实外观,而不是
-    凭记忆瞎猜。
+    只取前 ``max_refs`` 条、每条 claim 截到 150 字——够 LLM 抓住关键外观
+    特征即可,无需全文注入(会增大 prompt 负担)。
     """
     if not knowledge:
         return ""
     lines = [
         "",
-        "REFERENCE FACTS (retrieved by a search step for the named entity in this",
-        "request). Use these to depict the subject's REAL appearance -- shape,",
-        "proportions, distinctive features, colors -- instead of guessing:",
+        "REFERENCE FACTS (top search results for the named entity; use these",
+        "to depict its REAL appearance instead of guessing):",
     ]
-    for ref in knowledge:
-        claim = getattr(ref, "claim", None) or ""
-        source = getattr(ref, "source", None)
-        claim = claim.strip().replace("\n", " ")
-        if len(claim) > 300:
-            claim = claim[:300] + "..."
+    for ref in list(knowledge)[:max_refs]:
+        claim = (getattr(ref, "claim", None) or "").strip().replace("\n", " ")
+        claim = claim[:150] + ("..." if len(claim) > 150 else "")
         if not claim:
             continue
-        lines.append(f"- {claim}" + (f" [source: {source}]" if source else ""))
+        source = getattr(ref, "source", None)
+        lines.append(f"- {claim}" + (f" [{source}]" if source else ""))
     lines.append("")
     return "\n".join(lines)
 
