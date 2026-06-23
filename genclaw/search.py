@@ -40,9 +40,38 @@ class SearchProvider(abc.ABC):
         """启发式开关:只有知识驱动型任务才需要检索。
 
         放在这里(而不是路由函数)是为了让路由保持"纯函数:只看 state"。
-        决策权交给 agent / task_type,这里只是廉价的默认值。
+        主判据是 task_type == knowledge_grounded;兜底:即使 LLM 分错 task_type,
+        prompt 里有明显的具名真实实体也触发搜索。
         """
-        return task_type is TaskType.knowledge_grounded
+        if task_type is TaskType.knowledge_grounded:
+            return True
+        # 兜底启发式:prompt 提及具名品牌/产品/型号时也应检索参考资料
+        return _prompt_has_named_entity(prompt)
+
+
+_NAMED_ENTITY_SIGNALS = (
+    # 2+ 个连续的首字母大写词(专有名词短语),如 "Vision GranTurismo"、"Eiffel Tower"
+    r"\b[A-Z][a-z]+(?:\s+[A-Z][a-zA-Z]*){1,}",
+    # camelCase / 内部大写的词(品牌名常见),如 "iPhone"、"GranTurismo"、"macOS"
+    r"\b[a-zA-Z]*[a-z][A-Z][a-zA-Z]*",
+    # 首字母大写词 + 紧跟的数字型号,如 "Model 3"、"RTX 4090"
+    r"\b[A-Z][a-zA-Z]*\s+\d",
+)
+
+
+def _prompt_has_named_entity(prompt: str) -> bool:
+    """粗判 prompt 是否包含具名真实实体(非通用描述)。
+
+    不求精确:false positive(多跑搜索)比 false negative(漏搜)代价低。
+    句首大写词单独出现不算(如 "Create ...")——只有连续大写词、内部大写、
+    或大写词跟型号数字才触发。
+    """
+    import re
+
+    for pattern in _NAMED_ENTITY_SIGNALS:
+        if re.search(pattern, prompt):
+            return True
+    return False
 
 
 class NullSearchProvider(SearchProvider):

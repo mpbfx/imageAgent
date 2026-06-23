@@ -99,11 +99,21 @@ def build_providers(mode: str, search_provider: Optional[str] = None):
         code_mode = mode != "external-template"
         agent = ExternalLLMAgent(code_mode=code_mode)
 
-        # 按 search_provider 参数选搜索后端
+        # 按 search_provider 参数选搜索后端。未显式指定时,根据已配置的
+        # 凭据自动选择;都没配则降级到 NullSearchProvider(ADR 0004:
+        # 凭据不可得时退回开源/空实现,而不是硬选一个会报错的 provider)。
+        import os
+
         if search_provider == "serper":
             search = SerperSearchProvider()
-        else:
+        elif search_provider == "tavily":
             search = TavilySearchProvider()
+        elif os.environ.get("TAVILY_API_KEY"):
+            search = TavilySearchProvider()
+        elif os.environ.get("SERPER_API_KEY"):
+            search = SerperSearchProvider()
+        else:
+            search = NullSearchProvider()
 
         return (
             agent,

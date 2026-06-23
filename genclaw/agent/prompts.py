@@ -40,6 +40,10 @@ Principles:
 Allowed enums (use these exact lowercase strings):
 - task_type: "composition" | "long_text" | "physical_reasoning" | "editing"
   | "knowledge_grounded"
+  Use "knowledge_grounded" whenever the prompt names a specific real-world entity
+  you must depict faithfully: a named product/model (e.g. "Xiaomi Vision GranTurismo"),
+  brand, logo, real person, landmark, flag, or any long-tail factual subject where
+  you would otherwise be guessing the appearance. This triggers a search step.
 - backend: "svg" (object count / layout / spatial relations / local edits)
   | "html" (long text, posters, cards, pages) | "three" (3D geometry / physics
   / viewpoint) | "python" (matplotlib numeric physical drafts) | "canvas"
@@ -233,6 +237,17 @@ is a structural sketch: get object counts, positions, sizes, spatial relations,
 and text exactly right; a downstream image model adds realistic texture and
 lighting later.
 
+TASK TYPE -- pick knowledge_grounded whenever the prompt names a SPECIFIC
+real-world entity you must depict faithfully but cannot reliably draw from
+memory: a named product or model (e.g. "Xiaomi Vision GranTurismo", a specific
+car/phone/building), a brand or logo, a real person, a landmark or place, a
+flag/emblem, a dated event, or any long-tail factual subject. Choosing
+knowledge_grounded triggers a search step that retrieves reference facts (shape,
+proportions, colors, distinctive features) BEFORE you draw, so the sketch
+matches the real thing. If you are guessing what the subject looks like, it is
+knowledge_grounded. Use composition/physical_reasoning/long_text only when the
+prompt is fully self-describing (generic shapes, layouts, text you are given).
+
 Choose code_lang by the NATURE of the task, not by surface keywords. Decide by
 what the backend is fundamentally good at:
 
@@ -274,24 +289,42 @@ what the backend is fundamentally good at:
   reflections, shadows. Use THREE.js for interactive or complex 3D visualization.
   CRITICAL for quality THREE.js rendering:
     * Materials: use MeshStandardMaterial (metalness/roughness) for physically
-      correct rendering, NOT MeshPhongMaterial. For reflective/mirrored surfaces,
-      set metalness >= 0.8 and roughness <= 0.1.
+      correct rendering, NOT MeshPhongMaterial or MeshBasicMaterial.
+    * PLANAR MIRRORS vs SHINY SURFACES -- this is the most common error:
+      - Planar mirror (a flat surface that shows correct reflected images of objects
+        in geometrically accurate positions, like a bathroom mirror, a 90-degree
+        mirror pair, a floor reflection): MUST use THREE.Reflector from addons.
+        Import from "https://unpkg.com/three@0.160.0/examples/jsm/objects/Reflector.js"
+        A Reflector renders the scene from a mirrored camera through the mirror
+        plane -- objects appear at the correct reflected positions.
+        Example:
+          import { Reflector } from 'https://unpkg.com/three@0.160.0/examples/jsm/objects/Reflector.js';
+          const mirror = new Reflector(new THREE.PlaneGeometry(5, 4), {
+            clipBias: 0.003, textureWidth: 1024, textureHeight: 1024,
+            color: new THREE.Color(0x889999)
+          });
+          mirror.position.set(0, 2, 0); mirror.rotation.y = 0;
+          scene.add(mirror);
+      - Shiny/metallic surface (a curved or rough surface that has specular
+        highlights, like a chrome sphere, polished metal, car paint): use
+        MeshStandardMaterial with metalness >= 0.8, roughness <= 0.15, and
+        optionally envMap via CubeCamera for environment reflection.
+      DO NOT use MeshStandardMaterial + envMap to simulate a flat mirror --
+      it only produces a blurry spherical reflection, not geometrically correct
+      planar images of scene objects.
     * Lighting: always include THREE.DirectionalLight (for shadows) + AmbientLight
       (for fill). Adjust shadow.mapSize (2048 or higher for detail), shadow.camera
       bounds, and shadow.bias to eliminate artifacts. Position light to illuminate
       key features.
-    * Environment: if scene has reflective/metallic surfaces, compute or set
-      envMap via CubeCamera or precomputed cubemap. Without envMap, metallic
-      surfaces will be dark and unrealistic.
+    * Environment: for metallic/shiny (non-mirror) surfaces, set envMap via
+      CubeCamera or precomputed cubemap. Without envMap, metallic surfaces look dull.
     * Shadows: enable renderer.shadowMap, set castShadow/receiveShadow on meshes.
       Bare geometry without shadows looks flat.
     * Camera: set near/far clip planes appropriately (near=0.1, far=1000 is typical);
       position camera to show all objects; use lookAt to ensure focus is correct.
     * Render loop: set window.__gcRendered = true after initial frames render so
       screenshot knows when to capture (typically after 10-20 frames).
-    * DO NOT use BasicMaterial, PlaneGeometry for visible surfaces, or raw
-      unlit geometry. DO NOT forget shadows/lighting -- a scene with only geometry
-      but no lights is invisible or dull.
+    * DO NOT use BasicMaterial or unlit geometry. DO NOT forget shadows/lighting.
     * Canvas sizing: must match requested width/height exactly; use
       renderer.setPixelRatio(1) for 1:1 mapping.
 
@@ -375,8 +408,21 @@ Three.js:
   physically correct rendering).
 - ALWAYS include: AmbientLight (fill), DirectionalLight (shadows), and proper
   shadow configuration (shadowMap enabled, shadow.mapSize >= 2048).
-- For reflective/metallic surfaces (mirrors, polished spheres): set metalness >= 0.8,
-  roughness <= 0.1, and compute/set envMap (environment map).
+- PLANAR MIRRORS (flat surfaces that show geometrically correct reflections):
+  Use THREE.Reflector, NOT MeshStandardMaterial + envMap.
+  envMap/CubeCamera only produces a blurry spherical reflection, not real mirror images.
+  Import: import {{ Reflector }} from 'https://unpkg.com/three@0.160.0/examples/jsm/objects/Reflector.js';
+  Usage:
+    const mirror = new Reflector(new THREE.PlaneGeometry(width, height), {{
+      clipBias: 0.003, textureWidth: 1024, textureHeight: 1024,
+      color: new THREE.Color(0x889999)
+    }});
+    mirror.position.set(...); mirror.rotation.set(...);
+    scene.add(mirror);
+  For two mirrors at 90 degrees, create two Reflector instances with the appropriate
+  rotation so their normals face into the scene.
+- SHINY/METALLIC surfaces (curved or glossy, NOT flat mirrors): MeshStandardMaterial
+  with metalness >= 0.8, roughness <= 0.1, optionally envMap via CubeCamera.
 - Camera: set perspectiveCamera with proper near/far, position it to show all
   objects, call lookAt() to focus.
 - Canvas: create with renderer.setSize(width, height); set renderer.setPixelRatio(1).
