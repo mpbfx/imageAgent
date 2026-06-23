@@ -1,22 +1,21 @@
-"""Core schema: the central ``CanvasPlan`` contract.
+"""核心 schema:全系统共享的 ``CanvasPlan`` 契约。
 
-This module is the single most important contract in the reproduction. Per
-ADR 0001 it is the *central contract* that both renderers and the reviewer
-consume; per ADR 0003 its fields are derived from the four benchmark task
-families (GenEval++ composition, LongText-Bench long text, ImgEdit local
-editing, Mind-Bench knowledge/reasoning) rather than the three phase-1
-fixtures.
+本模块是整个复现项目里**最重要**的契约模块(ADR 0001):renderer 和 reviewer
+都消费它,它是连接认知层、渲染层、生成层、审查层的中心节点。其字段不是
+按"phase-1 的三个 fixture"来设计,而是按论文里四个 benchmark 任务族
+(ADR 0003:GenEval++ 组合、LongText-Bench 长文本、ImgEdit 局部编辑、
+Mind-Bench 知识 / 推理)推导得出。
 
-ADR 0003 also requires the schema to distinguish two canvas *sources*:
+ADR 0003 还要求 schema 区分两种画布*源码来源*:
 
-* ``structured`` -- the canvas is compiled from validated fields by a
-  schema-owned template (phase 1).
-* ``code`` -- the canvas is free-form source code emitted by an LLM and
-  rendered after static validation in a sandbox (phase 2). Phase 1 reserves
-  the ``code_source`` / ``code_lang`` fields but does not compile them.
+  * ``structured``——画布由 schema 自带的模板从校验过的字段编译出来
+    (phase 1);
+  * ``code``——画布是 LLM 直接产出的自由形式源码,在沙箱里经静态校验
+    后再渲染(phase 2)。phase 1 预留了 ``code_source`` / ``code_lang``
+    字段,但不编译它们。
 
-The module has no third-party dependency beyond Pydantic, so it imports and
-validates without a browser or any provider credentials.
+本模块除 Pydantic 外没有第三方依赖,因此无需浏览器或任何 provider 凭据
+即可 import 与校验。
 """
 
 from __future__ import annotations
@@ -45,27 +44,26 @@ class TaskType(str, Enum):
 
 
 class CanvasBackend(str, Enum):
-    """Executable canvas backends (paper §3.2).
+    """可执行画布后端(论文 §3.2)。
 
-    The paper lists SVG (composition/layers), HTML/CSS (text-intensive), and
-    "Python plotting, Canvas, or a simple 3D script" for physical/geometric
-    tasks. We model Python and Canvas as distinct backends from Three.js because
-    the paper uses them for *numeric* physical drafts (springs, pressure,
-    buoyancy) where Three.js (a 3D scene) is not the right tool.
+    论文列出了 SVG(组合/图层)、HTML/CSS(文本密集型)、以及用于物理
+    /几何任务的"Python 绘图、Canvas 或简单的 3D 脚本"。我们把 Python
+    和 Canvas 与 Three.js 建模成不同的后端,是因为论文把它们用于
+    *数值型*物理草图(弹簧、压力、浮力),Three.js(3D 场景)不适合那种场景。
     """
 
     svg = "svg"
     html = "html"
     three = "three"
-    python = "python"  # Python plotting (e.g. matplotlib) for physical drafts
-    canvas = "canvas"  # 2D Canvas script for geometric/physical references
+    python = "python"  # Python 绘图(如 matplotlib)用于物理草图
+    canvas = "canvas"  # 2D Canvas 脚本用于几何/物理参考
 
 
 class CanvasSource(str, Enum):
-    """Where the canvas code comes from (ADR 0003)."""
+    """画布代码的来源(ADR 0003)。"""
 
-    structured = "structured"  # template-compiled from fields (phase 1)
-    code = "code"  # free-form source + validation (phase 2)
+    structured = "structured"  # 模板从字段编译出来(phase 1)
+    code = "code"  # 自由形式源码 + 校验(phase 2)
 
 
 class CanvasSize(BaseModel):
@@ -91,7 +89,7 @@ class ObjectSpec(BaseModel):
     height: float = Field(default=0.0, ge=0.0)
     fill: Optional[str] = None
     stroke: Optional[str] = None
-    # Free-form backend-specific attributes (e.g. polygon "points", radius).
+    # 后端特定的自由属性(如 polygon 的 "points"、circle 的 radius)。
     attributes: dict = Field(default_factory=dict)
 
 
@@ -116,10 +114,10 @@ class RelationSpec(BaseModel):
 
 
 class ReviewCheck(BaseModel):
-    """A declarative, deterministic check the reviewer must run.
+    """一条声明式、确定性的 check,reviewer 必须跑它。
 
-    ``kind`` selects the rule; ``target`` and ``expected`` parameterize it.
-    See :mod:`genclaw.review.rules` for the supported kinds.
+    ``kind`` 选规则;``target`` / ``expected`` 给出参数。具体支持的
+    kind 见 :mod:`genclaw.review.rules`。
     """
 
     kind: str  # "object_count" | "contains_text" | "backend" | "artifact_exists" | "image_size"
@@ -128,10 +126,10 @@ class ReviewCheck(BaseModel):
 
 
 class EditOp(BaseModel):
-    """A localized edit instruction (ImgEdit family).
+    """一条局部编辑指令(ImgEdit 族)。
 
-    Phase 1 records edits structurally so the editing fixture and harness have
-    a contract; the real VLM-layering + SAM3 + inpainting mechanism is phase 2.
+    Phase 1 把编辑以结构化形式记录下来,这样编辑 fixture 与 harness
+    都有契约可循;真正的 VLM 叠加 + SAM3 + 局部重绘机制在 phase 2。
     """
 
     op: Literal["move", "recolor", "resize", "remove", "add"]
@@ -140,13 +138,12 @@ class EditOp(BaseModel):
 
 
 class KnowledgeRef(BaseModel):
-    """A retrieved fact for knowledge-grounded generation (Mind-Bench).
+    """一条为知识驱动型生成而检索到的事实(Mind-Bench)。
 
-    Produced by the search node when the cognitive layer fills a knowledge gap
-    (paper §3.2: "the agent calls search tools to complete the relevant facts").
-    ``source`` records the URL/origin so the Review layer can trace and verify
-    the retrieved context (paper §3.1: "verify the accuracy of the URL contents
-    retrieved by the search tool").
+    由 search 节点产出,用于在认知层补全知识空白(论文 §3.2:"agent
+    会调用搜索工具补全相关事实,从而填补认知空白")。``source`` 记录
+    URL / 来源,review 层可以据此回溯并核验检索到的内容(论文 §3.1:
+    "核验搜索工具所检索 URL 内容的准确性")。
     """
 
     claim: str
@@ -155,28 +152,26 @@ class KnowledgeRef(BaseModel):
 
 
 class ReasoningStep(BaseModel):
-    """An explicit intermediate conclusion from the cognitive layer.
+    """认知层产出的一条显式中间结论。
 
-    The paper's reasoning pillar (§3.2): for math/geography/physics tasks the
-    agent "first explicitly obtains intermediate conclusions ... and then
-    converts implicit relations into visual constraints" (e.g. computes a
-    geometry answer, or parses physical variables, before rendering). Recording
-    these makes the reasoning inspectable and traceable, like KnowledgeRef does
-    for retrieved facts.
+    论文的推理支柱(§3.2):对于数学/地理/物理类任务,agent 会"先
+    显式获得中间结论,再把隐式关系转成视觉约束"(例如在画图前
+    先算几何答案、解析物理变量)。记录这些结论让推理变得可审查、
+    可追溯——和 :class:`KnowledgeRef` 给"检索到的事实"做的是同一件事。
     """
 
-    question: str  # what had to be reasoned out (e.g. "reflection position")
-    conclusion: str  # the derived intermediate result, as text
-    # Optional numeric/structured values the conclusion yields, consumed by the
-    # canvas layer as visual constraints (e.g. {"angle": 45, "x": 120}).
+    question: str  # 必须推理出的问题(例如"反射点位置")
+    conclusion: str  # 推理得到的中间结论,文本形式
+    # 该结论产生的可选数值 / 结构化值,canvas 层会把它当作视觉约束
+    # 使用(例如 {"angle": 45, "x": 120})。
     values: dict = Field(default_factory=dict)
 
 
 class CanvasPlan(BaseModel):
-    """The central contract shared by renderers and the reviewer.
+    """renderer 与 reviewer 共享的中心契约。
 
-    A plan is either ``structured`` (template-compiled, phase 1) or ``code``
-    (free-form source, phase 2). The discriminant is :attr:`source`.
+    一个 plan 要么是 ``structured``(模板编译、phase 1),要么是
+    ``code``(自由源码、phase 2)。判别字段是 :attr:`source`。
     """
 
     request_id: str
@@ -187,20 +182,19 @@ class CanvasPlan(BaseModel):
 
     source: CanvasSource = CanvasSource.structured
 
-    # Structured payload (used when source == structured).
+    # 结构化载荷(``source == structured`` 时使用)。
     layers: list[LayerSpec] = Field(default_factory=list)
     objects: list[ObjectSpec] = Field(default_factory=list)
     text: list[TextSpec] = Field(default_factory=list)
     relations: list[RelationSpec] = Field(default_factory=list)
 
-    # Edit / knowledge / reasoning payloads for the editing and
-    # knowledge-grounded families. ``knowledge`` is filled by the search node;
-    # ``reasoning`` records the cognitive layer's intermediate conclusions.
+    # editing 与 knowledge-grounded 任务族的载荷。``knowledge`` 由
+    # search 节点填充;``reasoning`` 记录认知层的中间结论。
     edits: list[EditOp] = Field(default_factory=list)
     knowledge: list[KnowledgeRef] = Field(default_factory=list)
     reasoning: list[ReasoningStep] = Field(default_factory=list)
 
-    # Free-form code payload (reserved for phase 2; not compiled in phase 1).
+    # 自由形式代码载荷(预留给 phase 2;phase 1 不编译)。
     code_source: Optional[str] = None
     code_lang: Optional[Literal["svg", "html", "three", "javascript", "python"]] = None
 
@@ -250,7 +244,7 @@ class CanvasPlan(BaseModel):
         return self
 
     def ordered_layers(self) -> list[LayerSpec]:
-        """Layers sorted by render order (ascending)."""
+        """按渲染顺序(升序)排序后的 layers。"""
         return sorted(self.layers, key=lambda layer: layer.order)
 
 

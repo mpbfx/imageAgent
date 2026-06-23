@@ -1,21 +1,20 @@
-"""Pipeline orchestration (plan task 11).
+"""Pipeline 编排(plan task 11)。
 
-``Pipeline.run`` constructs the initial state and run artifacts, then drives the
-workflow either through the compiled LangGraph graph (``builder.py``) or by
-sequencing the same node functions directly. The direct path lets the full
-pipeline run and test without langgraph installed (phase-1 lazy-import
-strategy); both paths use the identical node callables and route function, so
-behavior matches.
+``Pipeline.run`` 构造初始 state 与 run artifacts,然后通过两条路径之一
+驱动 workflow:编译后的 LangGraph 图(``builder.py``),或直接按顺序
+执行同样的 node 函数。直接路径让 pipeline 可以在不安装 langgraph
+的情况下跑全流程(phase-1 的懒加载策略);两条路径用完全相同的
+node 可调用对象与路由函数,所以行为一致。
 
-All artifacts and the trace are written as a side effect of the nodes. A
-provider/backend failure leaves a structured error artifact and is surfaced on
-``state.errors`` -- never swallowed (ADR 0001).
+所有 artifact 与 trace 都是 node 的副作用写出的。provider / backend
+失败会留一条结构化 error artifact,挂到 ``state.errors`` 上——绝不
+吞掉(ADR 0001)。
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from genclaw.agent.base import AgentProvider
 from genclaw.agent.fixture import FixtureAgent
@@ -33,26 +32,26 @@ from genclaw.search import NullSearchProvider, SearchProvider, TavilySearchProvi
 
 
 def _new_request_id(prompt: str, counter: int) -> str:
-    """Deterministic request id (no clock/random; reproducible)."""
+    """确定性的 request id(不读时钟、不取随机,保证可复现)。"""
     slug = "".join(c if c.isalnum() else "-" for c in prompt.lower())[:24].strip("-")
     return f"{slug or 'run'}-{counter:03d}"
 
 
 def build_providers(mode: str):
-    """Build (agent, generator, reviewer, search) for a mode.
+    """按 mode 构造 (agent, generator, reviewer, search)。
 
-    * ``fixture``  -- deterministic, credential-free (FixtureAgent + mock + rules
-      + null search).
-    * ``external`` -- paper-aligned stack (ADR 0004) with **code-as-brush** by
-      default: the LLM writes free-form SVG/HTML/Three.js source (the paper's
-      core mechanism). Claude-Opus agent, image generator, VLM reviewer, Tavily
-      search. Adapters raise ProviderNotConfiguredError if credentials missing.
-    * ``external-template`` -- same stack but the agent emits a *structured*
-      template plan instead of free-form code. The deterministic fallback /
-      baseline; does not execute model-authored code.
-    * ``external-code`` -- explicit alias for ``external`` (code-as-brush).
+    * ``fixture``  —— 确定性、无需凭据(FixtureAgent + mock + rules
+      + null search)。
+    * ``external`` —— 与论文对齐的栈(ADR 0004),默认 *code-as-brush*:
+      LLM 直接写 SVG / HTML / Three.js 源码(论文核心机制)。Claude-Opus
+      agent、图像生成器、VLM 审查者、Tavily 搜索。凭据缺失时 adapter
+      抛 :class:`ProviderNotConfiguredError`。
+    * ``external-template`` —— 同样的栈,但 agent 产*结构化*模板
+      plan,不再产自由形式代码。是确定性兜底 / 基线,不会执行模型
+      写的代码。
+    * ``external-code`` —— ``external`` 的显式别名(code-as-brush)。
 
-    Returns a 4-tuple; raises ValueError for an unknown mode.
+    返回 4 元组;未知 mode 抛 ValueError。
     """
     if mode == "fixture":
         return (
@@ -66,26 +65,29 @@ def build_providers(mode: str):
         from genclaw.generators.external import (
             GeminiImageGenerator,
             OpenAICompatImageGenerator,
+            UniAPIImageEditGenerator,
         )
         from genclaw.review.composite import CompositeReviewer
         from genclaw.review.vlm import VLMReviewer
 
-        # A custom GOOGLE_BASE_URL almost always means an OpenAI-style image
-        # gateway (the native google-genai generate_content API is rejected by
-        # such proxies). Use the native Gemini SDK only against Google's own
-        # endpoint.
         cfg = ProviderConfig.from_env()
-        generator = (
-            OpenAICompatImageGenerator()
-            if cfg.google_base_url
-            else GeminiImageGenerator()
-        )
-        # Structural checks run on the canvas source; the VLM judges only the
-        # final image's perceptual fidelity (see CompositeReviewer).
+        # 根据 provider 配置挑选生成器:
+        # 1. 配了 UniAPI(走 Qwen 图像编辑)就用 UniAPI
+        # 2. 配了 OpenAI 兼容(自定义 GOOGLE_BASE_URL 或 legacy)就用 OpenAI 兼容
+        # 3. 默认 Gemini
+        if cfg.uniapi_api_key:
+            generator = UniAPIImageEditGenerator()
+        elif cfg.google_base_url or cfg.uniapi_api_key:
+            generator = OpenAICompatImageGenerator()
+        else:
+            generator = GeminiImageGenerator()
+
+        # 结构检查跑在 canvas 源码上;VLM 只看最终成图的感知保真度
+        # (见 CompositeReviewer)。
         reviewer = CompositeReviewer(perceptual=VLMReviewer())
-        # code-as-brush is the DEFAULT for real models (ADR 0003/0005): the paper
-        # is "code-driven", so external == code-as-brush. Only external-template
-        # opts out to the structured template path.
+        # code-as-brush 是真实模型的**默认**(ADR 0003/0005):论文是
+        # "code-driven",所以 external == code-as-brush。只有
+        # external-template 走结构化模板路径。
         code_mode = mode != "external-template"
         agent = ExternalLLMAgent(code_mode=code_mode)
         return (
@@ -101,7 +103,7 @@ def build_providers(mode: str):
 
 
 class Pipeline:
-    """Runs the GenClaw pipeline end to end."""
+    """端到端跑 GenClaw pipeline。"""
 
     def __init__(
         self,
@@ -112,13 +114,15 @@ class Pipeline:
         search: Optional["SearchProvider"] = None,
         base_dir: str | Path = "outputs/runs",
         use_langgraph: bool = False,
+        on_progress: Optional[Callable[[str, str, Optional[dict]], None]] = None,
     ):
         self.agent = agent or FixtureAgent()
         self.generator = generator or MockImageGenerator()
         self.reviewer = reviewer or RuleReviewer()
-        self.search = search  # None -> GraphNodes defaults to NullSearchProvider
+        self.search = search  # None 时 GraphNodes 默认用 NullSearchProvider
         self.base_dir = Path(base_dir)
         self.use_langgraph = use_langgraph
+        self.on_progress = on_progress
         self._counter = 0
 
     @classmethod
@@ -128,8 +132,9 @@ class Pipeline:
         *,
         base_dir: str | Path = "outputs/runs",
         use_langgraph: bool = False,
+        on_progress: Optional[Callable[[str, str, Optional[dict]], None]] = None,
     ) -> "Pipeline":
-        """Construct a Pipeline with the provider stack for ``mode``."""
+        """按 ``mode`` 选好 provider 栈再构造 Pipeline。"""
         agent, generator, reviewer, search = build_providers(mode)
         return cls(
             agent,
@@ -138,6 +143,7 @@ class Pipeline:
             search=search,
             base_dir=base_dir,
             use_langgraph=use_langgraph,
+            on_progress=on_progress,
         )
 
     def run(
@@ -149,10 +155,10 @@ class Pipeline:
         request_id: Optional[str] = None,
         timestamp: str = "00000000-000000",
     ) -> GenClawState:
-        """Run the pipeline for ``prompt`` and return the final state.
+        """为 ``prompt`` 跑一次 pipeline,返回最终 state。
 
-        ``timestamp`` is injected (not read from the clock) for reproducible run
-        directories; callers that want wall-clock names pass one in.
+        ``timestamp`` 由调用方注入(不读时钟),用于产出可复现的
+        run 目录;想要真实时间戳的调用方自己传一个进来。
         """
         self._counter += 1
         rid = request_id or _new_request_id(prompt, self._counter)
@@ -177,6 +183,7 @@ class Pipeline:
             self.reviewer,
             search=self.search,
             timestamp=timestamp,
+            on_progress=self.on_progress,
         )
         if self.use_langgraph:
             final = self._run_langgraph(nodes, state)
@@ -185,17 +192,25 @@ class Pipeline:
         return final
 
     def _run_direct(self, nodes: GraphNodes, state: GenClawState) -> GenClawState:
-        """Sequence nodes directly, mirroring the LangGraph edges and routing."""
+        """直接按顺序执行节点,镜像 LangGraph 的边和路由。"""
         state = nodes.conceptualize(state)
-        if state.plan is None:  # conceptualize failed; stop, error already recorded.
+        if state.plan is None:  # conceptualize 失败;停,error 已写。
             return state
-        state = nodes.search_node(state)  # ground knowledge before sketching
+        state = nodes.search_node(state)  # 在 sketch 之前先做知识接地
 
+        revision = 0
         while True:
             state = nodes.render(state)
             state = nodes.generate(state)
             state = nodes.review(state)
             if route_after_review(state) == REVISE:
+                revision += 1
+                if self.on_progress:
+                    self.on_progress(
+                        "revise",
+                        "starting",
+                        {"revision": revision, "max_revisions": state.max_revisions},
+                    )
                 state = nodes.revise(state)
                 continue
             break
@@ -206,7 +221,7 @@ class Pipeline:
 
         graph = build_graph(nodes)
         result = graph.invoke(state)
-        # langgraph may return a dict-like; normalize back to GenClawState.
+        # langgraph 可能返回 dict-like;统一回 GenClawState。
         if isinstance(result, GenClawState):
             return result
         return GenClawState.model_validate(result)
