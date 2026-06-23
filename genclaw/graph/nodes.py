@@ -22,6 +22,7 @@ error artifact,而不是被吞掉(ADR 0001)。
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Callable, Optional
 
 from genclaw.agent.base import AgentProvider
@@ -70,6 +71,14 @@ def _renderer_for_plan(plan: CanvasPlan) -> Renderer:
             return PassthroughRenderer()
         return CodeRenderer()
     return _renderer_for(plan.backend)
+
+
+def _neutral_canvas(run_dir, width: int, height: int) -> Path:
+    """产出中性灰底 PNG,给 img2img 生成器当"空白起步"输入。"""
+    from PIL import Image
+    dest = Path(run_dir) / "sketch.png"
+    Image.new("RGB", (width, height), (128, 128, 128)).save(dest)
+    return dest
 
 
 def _download_reference_image(plan: CanvasPlan, run_dir) -> tuple[Optional[Path], Optional[str]]:
@@ -269,6 +278,14 @@ class GraphNodes:
             elif ref_err and "no image_url" not in ref_err and "no run_dir" not in ref_err:
                 # 有 URL 但下载失败时才记录警告,避免对无参考图任务也刷日志
                 state.errors.append(f"reference_image: {ref_err}")
+        # img2img 生成器需要一张输入图。若 sketch 不存在(passthrough 且无参考图),
+        # 兜底生成一张中性底图,等价于"从空白起步的文生图"。
+        if sketch is None or not Path(sketch).exists():
+            sketch = _neutral_canvas(
+                state.artifacts.run_dir,
+                state.plan.size.width if state.plan else 1024,
+                state.plan.size.height if state.plan else 1024,
+            )
         # 透传 task_type 给生成器,让生成器按任务族选 rerender 强度:
         # 文字密集 -> 温柔(保字形);材质/场景 -> 强写实
         constraints = {}
