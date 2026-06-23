@@ -45,7 +45,7 @@ LangGraph 主图：`conceptualize → render → generate → review → route_a
 
 ## 技术栈与命令
 
-技术栈：Python 3.11+、LangGraph、Pydantic、Typer、Rich、Playwright（SVG/HTML/Three.js → PNG）、Pillow、NumPy、pytest。外部 provider 包放 optional extras，非 core 必需。
+技术栈：Python 3.10+（开发机为 64-bit 3.10.11；代码须兼容 3.10）、LangGraph、Pydantic、Typer、Rich、Playwright（SVG/HTML/Three.js → PNG）、Pillow、NumPy、pytest。外部 provider 包放 optional extras，非 core 必需。
 
 环境为 Windows（工作区 `D:\genclaw`），所有代码须支持 Windows。实现落地后的常用命令（见 plan 验证清单）：
 
