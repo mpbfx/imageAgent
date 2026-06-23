@@ -1,24 +1,21 @@
-"""Free-form code renderer: code-as-brush (ADR 0005).
+"""自由形式代码 renderer:code-as-brush(ADR 0005)。
 
-This is the heart of GenClaw's paper mechanism: the LLM writes the canvas
-*source code* directly (``source="code"`` with ``code_source``/``code_lang``),
-instead of filling fields that a template compiles. The renderer takes that
-code, (lightly) validates it, and rasterizes it -- the code IS the brush.
+这是 GenClaw 论文机制的核心:LLM 直接写画布*源码*(``source="code"``
+配 ``code_source`` / ``code_lang``),而不是填字段让模板去编译。renderer
+拿到这段代码,做(轻量)校验,然后光栅化——代码本身就是"画笔"。
 
-Supported langs:
-- ``svg``  -- pure markup; static allow-list validation (``svg_validate``).
-- ``html`` -- full HTML/CSS (may contain JS); rendered via Playwright.
-- ``three`` / ``javascript`` -- a Three.js (or other JS) scene; the LLM writes a
-  complete HTML document (loading three from a CDN) and we wait for WebGL frames
-  before screenshotting.
+支持的语言:
+- ``svg`` —— 纯标记语言;走静态白名单校验(``svg_validate``)。
+- ``html`` —— 完整 HTML / CSS(可以含 JS);用 Playwright 渲染。
+- ``three`` / ``javascript`` —— Three.js(或别的 JS)场景;LLM 写一
+  整份 HTML 文档(从 CDN 拉 three),我们等 WebGL 画几帧再截屏。
 
-SECURITY DEBT (ADR 0005, deliberately deferred): HTML/Three.js execute arbitrary
-model-authored JavaScript in headless Chromium with **NO sandbox** (no network
-isolation, no CSP, no resource caps beyond Playwright's timeout). This is
-acceptable ONLY because this is a LOCAL, single-machine reproduction whose input
-comes from a trusted LLM provider. Do NOT expose this to untrusted input or
-deploy publicly before the execution-sandbox ADR is implemented. SVG remains
-statically validated; HTML/JS are run essentially as-is.
+安全债(ADR 0005,故意延后):HTML / Three.js 会在头部 Chromium 里执行
+**任意**模型写的 JS,**没有沙箱**(无网络隔离、无 CSP、没有除
+Playwright timeout 之外的资源限制)。这只在"本地、单机的复现项目,
+输入来自可信 LLM provider"的前提下能接受。在执行沙箱 ADR 落地
+之前,*不要*把它暴露给不可信输入或对外部署。SVG 保持静态校验;
+HTML / JS 基本按原样执行。
 """
 
 from __future__ import annotations
@@ -29,31 +26,30 @@ from genclaw.renderers.base import RenderedCanvas, Renderer
 from genclaw.renderers.svg_validate import validate_svg
 from genclaw.schemas import CanvasBackend, CanvasPlan, CanvasSource
 
-# Langs that execute JS in the browser. Rendered with NO sandbox (see module
-# docstring). Three.js scenes additionally need a few animation frames before
-# the WebGL canvas has painted.
+# 会在浏览器里跑 JS 的语言。无沙箱渲染(见模块 docstring)。
+# Three.js 场景另外需要等几帧,WebGL canvas 才真正画完。
 _HTML_LANGS = {"html"}
 _JS_SCENE_LANGS = {"three", "javascript"}
 
 
 class CodeRenderError(ValueError):
-    """Raised when a code-source plan cannot be rendered."""
+    """code-source plan 渲染失败时抛出。"""
 
 
 class CodeRenderer(Renderer):
-    """Renders a ``source="code"`` plan by validating and rasterizing its code."""
+    """对 ``source="code"`` plan 做校验 + 光栅化。"""
 
-    backend = CanvasBackend.svg  # nominal; actual backend resolved per plan
+    backend = CanvasBackend.svg  # 名义上的;实际 backend 由 plan 决定
 
     def _resolve_lang(self, plan: CanvasPlan) -> str:
-        """Determine the effective code language (explicit, else inferred)."""
+        """决定 plan 实际用的代码语言(显式指定,否则启发式推断)。"""
         lang = (plan.code_lang or "").lower()
         if lang:
             return lang
         src = (plan.code_source or "").lower()
         if "<svg" in src:
             return "svg"
-        # A full HTML doc that pulls in three.js is a three scene; else plain html.
+        # 包含 three.js 的完整 HTML 文档 = three 场景;否则就是普通 html。
         if "three" in src and ("<html" in src or "<script" in src):
             return "three"
         if "<html" in src or "<!doctype html" in src:
@@ -61,20 +57,20 @@ class CodeRenderer(Renderer):
         return "svg"
 
     def compile_source(self, plan: CanvasPlan) -> str:
-        """Return the code source to render. Pure; no IO, no execution.
+        """返回要渲染的源码。纯函数:无 IO、无执行。
 
-        SVG is statically validated; HTML/Three.js are returned as-is (executed
-        without a sandbox at render time -- see module docstring / ADR 0005).
+        SVG 做静态校验;HTML / Three.js 原样返回(渲染时无沙箱执行,
+        见模块 docstring / ADR 0005)。
         """
         if plan.source is not CanvasSource.code or not plan.code_source:
             raise CodeRenderError(
-                "CodeRenderer requires source='code' with non-empty code_source"
+                "CodeRenderer requires source='code' and non-empty code_source"
             )
         lang = self._resolve_lang(plan)
         if lang == "svg":
             return validate_svg(plan.code_source)
         if lang in _HTML_LANGS or lang in _JS_SCENE_LANGS:
-            return plan.code_source  # executed as-is; NO sandbox (ADR 0005)
+            return plan.code_source  # 原样执行;无沙箱(ADR 0005)
         raise CodeRenderError(
             f"unsupported code_lang {lang!r}; expected 'svg', 'html', 'three', "
             "or 'javascript'"
@@ -114,10 +110,10 @@ class CodeRenderer(Renderer):
 def _try_rasterize(
     source: str, lang: str, png_path: Path, width: int, height: int
 ) -> bool:
-    """Rasterize the code to PNG via Playwright if available; else skip.
+    """Playwright 可用就光栅化成 PNG,否则跳过。
 
-    SVG is wrapped in a minimal HTML host. HTML is rendered as-is. Three.js/JS
-    scenes are rendered as-is but with a frame wait so WebGL has painted.
+    SVG 包一层最小 HTML 宿主;HTML 原样渲染;Three.js / JS 场景也原样
+    渲染,但会等几帧,让 WebGL 真正画完。
     """
     try:
         from genclaw.renderers.playwright_render import render_html_to_png
@@ -132,7 +128,7 @@ def _try_rasterize(
         )
         wait_frames = 0
     else:
-        html = source  # full HTML/Three.js document authored by the LLM
+        html = source  # LLM 写的完整 HTML / Three.js 文档
         wait_frames = 5 if lang in _JS_SCENE_LANGS else 0
 
     try:

@@ -1,15 +1,23 @@
-"""SVG renderer (plan task 6).
+"""SVG renderer(plan task 6)。
 
-Compiles a ``structured`` :class:`~genclaw.schemas.CanvasPlan` into SVG source.
-SVG is the backend for object count / layout / spatial relations / local edits
-(GenEval++ / ImgEdit families). Source compilation is pure and browser-free;
-PNG rasterization is delegated to the Playwright helper and only attempted when
-a browser is available, so this module imports without Playwright.
+把 ``structured`` :class:`~genclaw.schemas.CanvasPlan` 编译成 SVG 源码。
+SVG 是 object count / layout / spatial relations / local edit 任务
+(GenEval++ / ImgEdit) 的后端。源码编译是纯函数、且不依赖浏览器;PNG
+光栅化由 Playwright 辅助函数负责,且只在浏览器可用时尝试——所以本模块
+import 不需要装 Playwright。
 
-Supported shapes: circle, rectangle, ellipse, polygon (explicit ``points``).
-Elements render in layer order, then object order, so later layers paint on top
-(matching ``CanvasPlan.ordered_layers``).
+支持 shape: circle / rectangle / ellipse / polygon(显式 ``points``)。
+元素按 layer 顺序、再按 object 顺序绘制,后画的盖在前面(对齐
+``CanvasPlan.ordered_layers`` 的语义)。
 """
+
+# 中文补充说明：
+# 整个 renderer 几乎没有复杂度,核心就两个步骤:
+#   1) compile_source:把 plan 里所有 objects / text 排好序,塞进 <svg>
+#   2) _try_rasterize:用 Playwright 把 SVG 套进一个最小 HTML 容器截屏
+# 浏览器不可用就退回「只有 source 没有 png」,phase-1 也能跑 CI。
+# _SHAPES 用 kind 字符串分派具体形状的 renderer,新增 shape 只需加一个
+# 函数 + 字典里加一行。
 
 from __future__ import annotations
 
@@ -21,12 +29,12 @@ from genclaw.schemas import CanvasBackend, CanvasPlan, ObjectSpec, TextSpec
 
 
 def _attr(value: object) -> str:
-    """Escape a value for use inside a double-quoted XML attribute."""
+    """转义一个值,让它能放进双引号包裹的 XML 属性。"""
     return escape(str(value), {'"': "&quot;"})
 
 
 def _circle(obj: ObjectSpec) -> str:
-    # radius from attributes, else half of width.
+    # radius 优先取 attributes.radius,否则用 width 的一半
     r = obj.attributes.get("radius", obj.width / 2.0 if obj.width else 0.0)
     cx = obj.x + r
     cy = obj.y + r
@@ -56,7 +64,7 @@ def _ellipse(obj: ObjectSpec) -> str:
 
 def _polygon(obj: ObjectSpec) -> str:
     pts = obj.attributes.get("points", [])
-    # Accept [[x,y],...] or [x,y,x,y,...].
+    # 接受 [[x,y],...] 或 [x,y,x,y,...] 两种写法
     if pts and isinstance(pts[0], (list, tuple)):
         flat = [coord for pair in pts for coord in pair]
     else:
@@ -69,6 +77,7 @@ def _polygon(obj: ObjectSpec) -> str:
     return f'<polygon points="{_attr(points)}" fill="{_attr(fill)}"{stroke} />'
 
 
+# kind -> 形状渲染函数。新增形状只需加函数 + 字典加一行
 _SHAPES = {
     "circle": _circle,
     "rectangle": _rectangle,
@@ -80,7 +89,8 @@ _SHAPES = {
 
 def _text(txt: TextSpec) -> str:
     anchor = {"left": "start", "center": "middle", "right": "end"}[txt.align]
-    # y is treated as the text baseline offset by font size for a top-anchored box.
+    # y 在 plan 里是「文字框的 top」,而 SVG text 元素的 y 是「baseline」;
+    # 这里把 font_size 加回去当作近似 baseline 偏移(够用,不做精细 baseline 对齐)
     y = txt.y + txt.font_size
     return (
         f'<text x="{txt.x}" y="{y}" font-size="{txt.font_size}" '
@@ -90,15 +100,16 @@ def _text(txt: TextSpec) -> str:
 
 
 class SVGRenderer(Renderer):
-    """Compiles a CanvasPlan to SVG and (optionally) rasterizes to PNG."""
+    """把 CanvasPlan 编译成 SVG,可选地光栅化为 PNG。"""
 
     backend = CanvasBackend.svg
 
     def compile_source(self, plan: CanvasPlan) -> str:
-        """Compile ``plan`` to SVG source. Pure; no browser, no IO."""
+        """把 ``plan`` 编译成 SVG 源码。纯函数,无浏览器、无 IO。"""
         w, h = plan.size.width, plan.size.height
+        # layer_id -> order 的查找表,后面排序要用
         layer_order = {layer.id: layer.order for layer in plan.layers}
-        # Stable order: by layer order, then original object order.
+        # 稳定排序:先按 layer.order,再按原顺序(index 决定并列时的相对位置)
         ordered_objs = sorted(
             enumerate(plan.objects),
             key=lambda io: (layer_order.get(io[1].layer_id, 0), io[0]),
@@ -123,6 +134,7 @@ class SVGRenderer(Renderer):
         )
 
     def render(self, plan: CanvasPlan, output_dir: Path) -> RenderedCanvas:
+        """写 source 到 ``output_dir/canvas.svg``,有 Playwright 就再截 PNG。"""
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         source = self.compile_source(plan)
@@ -142,15 +154,16 @@ class SVGRenderer(Renderer):
 
 
 def _try_rasterize(svg_source: str, png_path: Path, width: int, height: int) -> bool:
-    """Rasterize SVG to PNG via Playwright if available; else skip.
+    """如果 Playwright 可用,把 SVG 光栅化成 PNG;否则返回 False 跳过。
 
-    Returns True if a PNG was written. Import is lazy so the module loads
-    without a browser (phase-1 strategy).
+    返回值表示「是否生成了 PNG」。import 是懒的,所以本模块在没有浏览器
+    的环境里也能 import(phase-1 策略)。
     """
     try:
         from genclaw.renderers.playwright_render import render_html_to_png
     except Exception:
         return False
+    # SVG 套进最小 HTML 容器,Playwright 直接截
     html = (
         "<!doctype html><html><head><meta charset='utf-8'>"
         "<style>*{margin:0;padding:0}</style></head>"

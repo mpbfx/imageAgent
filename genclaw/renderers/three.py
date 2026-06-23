@@ -1,23 +1,30 @@
-"""Three.js renderer (plan task 8).
+"""Three.js renderer(plan task 8)。
 
-Compiles a physical/geometric ``structured`` :class:`~genclaw.schemas.CanvasPlan`
-into an HTML host page that builds a Three.js scene. Three is the backend for
-geometry, physics, and viewpoint tasks.
+把物理/几何 ``structured`` :class:`~genclaw.schemas.CanvasPlan` 编译成一
+个会构建 Three.js 场景的 HTML 宿主页。Three 是几何 / 物理 / 视角任务的
+后端。
 
-Source compilation is pure and browser-free (it emits the HTML+JS scene from the
-plan's object ``attributes``); PNG rasterization is delegated to the Playwright
-helper with the swiftshader flags and frame-ready wait validated by the task 7.5
-WebGL spike, and is only attempted when a browser is available. The PNG path
-stays gated behind the ``render`` marker until the spike confirms stable Windows
-headless WebGL capture.
+源码编译纯函数、无浏览器(从 plan 的 object ``attributes`` 拼出 HTML+JS
+场景);PNG 光栅化交给 Playwright 辅助函数,带 swiftshader flags 和 frame
+wait(task 7.5 WebGL spike 验证),只在浏览器可用时尝试。PNG 路径在
+spike 确认 Windows 端 headless WebGL capture 稳定前,都是「标 render
+但拿不到 PNG」的灰态。
 
-Object kinds map to scene elements via ``attributes``:
+object kind -> 场景元素通过 ``attributes`` 映射:
 
-* ``plane`` / ``mirror`` -- a PlaneGeometry mesh (position, rotation, size, color)
-* ``sphere``             -- a SphereGeometry mesh (position, radius, color)
-* ``directional_light``  -- a DirectionalLight (position, intensity)
-* ``camera``             -- the PerspectiveCamera (position, look_at, fov)
+* ``plane`` / ``mirror`` -- 一个 PlaneGeometry mesh(位置、旋转、大小、颜色)
+* ``sphere``             -- 一个 SphereGeometry mesh(位置、半径、颜色)
+* ``directional_light``  -- 一盏 DirectionalLight(位置、强度)
+* ``camera``             -- PerspectiveCamera(位置、look_at、fov)
 """
+
+# 中文补充说明:
+# Three.js 用 CDN 拉取 0.160.0(写死版本,审计好追溯)。offline 环境无法
+# 拉 CDN 时,源码编译仍然成功,但 PNG 截屏会失败——失败是显式的,不会假成功。
+# __gcRendered 是给 Playwright 的「渲染好」信号旗:连续 3 帧后才置 true,
+# Playwright 端才允许截图(task 7.5 的经验:不 wait 就只能截到空白 canvas)。
+# mirror vs plane 的差别在 material(metalness=1 / roughness=0.05),
+# 是按物理上「镜面反射」的近似写的,够用就好。
 
 from __future__ import annotations
 
@@ -27,17 +34,18 @@ from pathlib import Path
 from genclaw.renderers.base import RenderedCanvas, Renderer
 from genclaw.schemas import CanvasBackend, CanvasPlan, ObjectSpec
 
-# Pinned Three.js via CDN module import. Offline runs (no network in the
-# headless browser) will fail PNG capture loudly; source compilation is
-# unaffected. Version recorded here so the dependency is auditable.
+# Three.js 用 CDN module import 拉。离线跑(headless 浏览器没网)PNG 截屏
+# 会显式失败;源码编译不受影响。版本写死,便于审计。
 THREE_CDN = "https://unpkg.com/three@0.160.0/build/three.module.js"
 
 
 def _vec(values, default=(0, 0, 0)) -> list:
+    """把 None / 可迭代 / 缺省 统一成 list。"""
     return list(values) if values is not None else list(default)
 
 
 def _mesh_js(obj: ObjectSpec) -> str:
+    """把一个 object 翻译成 Three.js 场景的添加代码。"""
     a = obj.attributes
     color = json.dumps(a.get("color", "#cccccc"))
     pos = _vec(a.get("position"))
@@ -83,6 +91,10 @@ def _mesh_js(obj: ObjectSpec) -> str:
 
 
 def _camera_js(plan: CanvasPlan) -> str:
+    """从 plan 里抠出 camera object,生成 PerspectiveCamera 配置代码。
+
+    没有 camera object 时给一组合理默认(略仰视,中景)。
+    """
     cams = [o for o in plan.objects if o.kind == "camera"]
     w, h = plan.size.width, plan.size.height
     if cams:
@@ -100,13 +112,14 @@ def _camera_js(plan: CanvasPlan) -> str:
 
 
 class ThreeRenderer(Renderer):
-    """Compiles a physical/geometric CanvasPlan to a Three.js HTML scene."""
+    """把物理/几何 CanvasPlan 编译成 Three.js HTML 场景。"""
 
     backend = CanvasBackend.three
 
     def compile_source(self, plan: CanvasPlan) -> str:
-        """Compile ``plan`` to a Three.js host HTML page. Pure; no browser."""
+        """把 ``plan`` 编译成 Three.js 宿主 HTML。纯函数,无浏览器。"""
         w, h = plan.size.width, plan.size.height
+        # camera 单独抽出来,其它 object 走 _mesh_js
         meshes = "".join(_mesh_js(o) for o in plan.objects if o.kind != "camera")
         camera = _camera_js(plan)
         bg = json.dumps(plan.style.get("background", "#101014"))
@@ -121,8 +134,8 @@ class ThreeRenderer(Renderer):
   <script type="module">
   import * as THREE from "{THREE_CDN}";
 
-  // Signal frame-readiness so the rasterizer screenshots a painted frame
-  // (task 7.5 strategy), never an empty canvas.
+  // 给 rasterizer 一个「帧就绪」信号,确保截到的是已绘帧(task 7.5 经验),
+  // 绝不是空白 canvas
   window.__gcRendered = false;
 
   const canvas = document.getElementById("scene");
@@ -148,6 +161,7 @@ class ThreeRenderer(Renderer):
 """
 
     def render(self, plan: CanvasPlan, output_dir: Path) -> RenderedCanvas:
+        """写 source + 有可能光栅化 PNG。"""
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         source = self.compile_source(plan)
@@ -167,12 +181,13 @@ class ThreeRenderer(Renderer):
 
 
 def _try_rasterize(html: str, png_path: Path, width: int, height: int) -> bool:
+    """Playwright 可用就截屏,等几帧让 WebGL 真正画完;否则跳过。"""
     try:
         from genclaw.renderers.playwright_render import render_html_to_png
     except Exception:
         return False
     try:
-        # Wait for several animation frames so WebGL has actually painted.
+        # wait_for_frames=5:让 WebGL 真正画完再截图(经验值,3 帧有时不够)
         render_html_to_png(html, png_path, width=width, height=height, wait_for_frames=5)
     except Exception:
         return False

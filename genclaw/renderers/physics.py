@@ -1,24 +1,33 @@
-"""Physics/geometry renderers: Python plotting and 2D Canvas (paper §3.2).
+"""物理/几何 renderer:Python plotting 和 2D Canvas(论文 §3.2)。
 
-The paper uses "Python plotting, Canvas, or a simple 3D script" for tasks
-governed by physical laws (springs, pressure, buoyancy, geometry), where the
-point is *correct relations*, not visual style -- code acts as a "physical
-draft" or "symbolic world model". Three.js (a full 3D scene) is the wrong tool
-for a numeric draft like a spring deflection plot, so these are distinct
-backends.
+论文对受物理规律约束的任务(弹簧、压强、浮力、几何关系)用「Python
+plotting、Canvas、或者简单 3D 脚本」——重点是「关系对」,不是画面好不好
+看,代码在这里扮演「物理草稿 / 符号化世界模型」的角色。Three.js 是全 3D
+场景,对「弹簧形变曲线」这种数值草图来说完全错误,所以拆成两个独立
+backend。
 
-Two backends share this module:
+本模块容纳两个 backend:
 
-* ``python`` -- emits a matplotlib script and rasterizes via matplotlib if
-  available (no browser needed). Source compilation is always pure.
-* ``canvas`` -- emits an HTML page with a 2D ``<canvas>`` script and rasterizes
-  via the Playwright helper (like the HTML/Three backends).
+* ``python`` -- 吐出一个 matplotlib 脚本,有 matplotlib 时直接光栅化(无
+  需浏览器)。源码编译总是纯函数。
+* ``canvas`` -- 吐出一个 2D ``<canvas>`` 脚本的 HTML 页,用 Playwright 辅助
+  函数光栅化(和 HTML / Three 后端一个路径)。
 
-Objects are drawn from their ``attributes`` (positions, sizes), and any
-``ReasoningStep.values`` the cognitive layer derived are available on the plan
-to drive coordinates -- the renderer reads the structured plan, never executes
-model-authored code (phase-1 structured source policy).
+objects 画在它们的 ``attributes`` 上(位置、大小),cognitive 层算出的
+``ReasoningStep.values`` 也会出现在 plan 里以驱动坐标——renderer 只读
+结构化 plan,绝**不**执行 model 写的代码(phase-1 的 structured source
+策略)。
 """
+
+# 中文补充说明：
+# 设计要点:
+#   1) 两个 backend 共享一个 renderer 类,backend 由 __init__ 决定
+#   2) python backend 用 matplotlib 截屏(不需浏览器);canvas backend 用
+#      浏览器截屏(同 HTML / Three 路径)
+#   3) draw calls 完全由 plan 字段生成,LLM 写的「代码」绝对不会在这里
+#      被直接执行——这是 phase-1 的安全策略:
+#        LLM 只能「选结构化字段」,不能「注入任意代码」
+#   4) reasoning 步骤里的 values 会原样落到脚本注释里,既可读又可复现
 
 from __future__ import annotations
 
@@ -30,7 +39,7 @@ from genclaw.schemas import CanvasBackend, CanvasPlan, ObjectSpec
 
 
 class PhysicsRenderer(Renderer):
-    """Compiles a physical/geometric plan to a Python or Canvas draft."""
+    """把物理/几何 plan 编译成 Python 或 Canvas 草稿。"""
 
     def __init__(self, backend: CanvasBackend = CanvasBackend.python):
         if backend not in (CanvasBackend.python, CanvasBackend.canvas):
@@ -38,12 +47,13 @@ class PhysicsRenderer(Renderer):
         self.backend = backend
 
     def compile_source(self, plan: CanvasPlan) -> str:
-        """Compile ``plan`` to backend source. Pure; no execution, no IO."""
+        """把 ``plan`` 编译成对应 backend 的源码。纯函数,无执行、无 IO。"""
         if self.backend is CanvasBackend.python:
             return _python_source(plan)
         return _canvas_source(plan)
 
     def render(self, plan: CanvasPlan, output_dir: Path) -> RenderedCanvas:
+        """写 source + 有可能光栅化 PNG(matplotlib 或 Playwright)。"""
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         source = self.compile_source(plan)
@@ -69,11 +79,14 @@ class PhysicsRenderer(Renderer):
 
 
 def _draw_calls_py(plan: CanvasPlan) -> str:
+    """把 plan.objects 翻译成 matplotlib 绘制调用。"""
     lines = []
     for obj in plan.objects:
         a = obj.attributes
         color = json.dumps(obj.fill or a.get("color", "#1f77b4"))
         if obj.kind in ("circle", "sphere"):
+            # radius 优先 attributes.radius,否则用 width/height 的最大一半,
+            # 全 0 兜底 1.0 防止除 0
             r = a.get("radius", max(obj.width, obj.height) / 2.0 or 1.0)
             lines.append(
                 f"ax.add_patch(plt.Circle(({obj.x}, {obj.y}), {r}, color={color}))"
@@ -93,6 +106,7 @@ def _draw_calls_py(plan: CanvasPlan) -> str:
 
 
 def _python_source(plan: CanvasPlan) -> str:
+    """生成 matplotlib 脚本。reasoning 步骤以注释形式落进去,方便人读。"""
     w, h = plan.size.width, plan.size.height
     dpi = 100
     reasoning = json.dumps(
@@ -124,6 +138,7 @@ if __name__ == "__main__":
 
 
 def _draw_calls_canvas(plan: CanvasPlan) -> str:
+    """把 plan.objects 翻译成 2D canvas 绘制调用。"""
     lines = []
     for obj in plan.objects:
         a = obj.attributes
@@ -141,6 +156,7 @@ def _draw_calls_canvas(plan: CanvasPlan) -> str:
 
 
 def _canvas_source(plan: CanvasPlan) -> str:
+    """生成 HTML+canvas2D 脚本页。__gcRendered 是给 Playwright 的「渲染完成」旗标。"""
     w, h = plan.size.width, plan.size.height
     return f"""<!doctype html>
 <html lang="en">
@@ -160,6 +176,7 @@ def _canvas_source(plan: CanvasPlan) -> str:
 
 
 def _try_matplotlib(plan: CanvasPlan, png_path: Path) -> bool:
+    """有 matplotlib 就直接光栅化,失败/没装就返回 False(只留 source)。"""
     try:
         import matplotlib
 
@@ -185,6 +202,7 @@ def _try_matplotlib(plan: CanvasPlan, png_path: Path) -> bool:
 
 
 def _draw_obj_mpl(ax, obj: ObjectSpec, plt) -> None:
+    """_try_matplotlib 用到的对象绘制器。和 _draw_calls_py 平行但走 live API。"""
     a = obj.attributes
     color = obj.fill or a.get("color", "#1f77b4")
     if obj.kind in ("circle", "sphere"):
@@ -195,6 +213,7 @@ def _draw_obj_mpl(ax, obj: ObjectSpec, plt) -> None:
 
 
 def _try_rasterize_html(html: str, png_path: Path, width: int, height: int) -> bool:
+    """Playwright 可用就截屏 canvas 页,否则跳过。"""
     try:
         from genclaw.renderers.playwright_render import render_html_to_png
     except Exception:
