@@ -442,8 +442,21 @@ Three.js:
     }});
     mirror.position.set(...); mirror.rotation.set(...);
     scene.add(mirror);
-  For two mirrors at 90 degrees, create two Reflector instances with the appropriate
-  rotation so their normals face into the scene.
+  For two mirrors at 90 degrees meeting at a corner at the origin, objects in
+  the positive-x positive-z quadrant:
+    // Back wall mirror: XY plane at z=0, normal faces +Z (toward objects/camera)
+    const mirrorBack = new Reflector(new THREE.PlaneGeometry(W, H), opts);
+    mirrorBack.position.set(W/2, H/2, 0);
+    // NO rotation needed -- default PlaneGeometry normal is +Z which is correct
+    // DO NOT use rotation.y = Math.PI -- that flips the face away from the scene
+    scene.add(mirrorBack);
+    // Side wall mirror: YZ plane at x=0, normal faces +X (toward objects/camera)
+    const mirrorSide = new Reflector(new THREE.PlaneGeometry(W, H), opts);
+    mirrorSide.position.set(0, H/2, W/2);
+    mirrorSide.rotation.y = Math.PI / 2;  // rotate so normal points +X
+    scene.add(mirrorSide);
+  Place objects at positive x AND positive z (e.g. x=1..3, z=1..3) so they are
+  in front of BOTH mirrors. Mirror size W should cover the x/z range of objects.
 - SHINY/METALLIC surfaces (curved or glossy, NOT flat mirrors): MeshStandardMaterial
   with metalness >= 0.8, roughness <= 0.1, optionally envMap via CubeCamera.
 - Camera: set perspectiveCamera with proper near/far, position it to show all
