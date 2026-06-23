@@ -12,7 +12,7 @@ from genclaw.schemas import (
     KnowledgeRef,
     TaskType,
 )
-from genclaw.search import NullSearchProvider, SearchProvider
+from genclaw.search import NullSearchProvider, SearchProvider, SerperSearchProvider
 
 
 def _kg_plan(request_id="kg-1"):
@@ -102,3 +102,33 @@ def test_search_failure_is_non_fatal(tmp_path):
     assert state.rendered_canvas is not None
     assert any("search:" in e for e in state.errors)
     assert state.artifacts.error_path("search").exists()
+
+
+def test_serper_search_provider_missing_key():
+    """SerperSearchProvider should raise when API key is missing."""
+    import os
+    env = {k: v for k, v in os.environ.items() if k != "SERPER_API_KEY"}
+    provider = SerperSearchProvider(env=env)
+
+    from genclaw.config import ProviderNotConfiguredError
+    with pytest.raises(ProviderNotConfiguredError):
+        provider.search("test query")
+
+
+def test_serper_search_provider_initialization():
+    """SerperSearchProvider should initialize with custom base_url from env."""
+    import os
+    env = {
+        "SERPER_API_KEY": "test-key",
+        "SERPER_BASE_URL": "https://custom.serper.dev",
+    }
+    provider = SerperSearchProvider(env=env)
+    assert provider._api_key == "test-key"
+    assert provider.base_url == "https://custom.serper.dev"
+
+
+def test_serper_search_provider_default_base_url():
+    """SerperSearchProvider should use default base_url when not specified."""
+    env = {"SERPER_API_KEY": "test-key"}
+    provider = SerperSearchProvider(env=env)
+    assert provider.base_url == "https://google.serper.dev"

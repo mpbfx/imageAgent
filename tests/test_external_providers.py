@@ -7,6 +7,8 @@ ProviderConfig.
 """
 
 import json
+import sys
+import types
 
 import pytest
 
@@ -144,6 +146,45 @@ def test_config_from_env_reads_keys():
     assert cfg.anthropic_api_key == "sk-x"
     assert cfg.google_api_key == "g-y"
     assert cfg.agent_model  # default present
+
+
+def test_glm_openai_compatible_uses_chat_with_thinking_disabled(monkeypatch):
+    calls = []
+
+    class FakeChatCompletions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            message = types.SimpleNamespace(content='{"ok": true}')
+            choice = types.SimpleNamespace(message=message)
+            return types.SimpleNamespace(choices=[choice])
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = types.SimpleNamespace(
+                completions=FakeChatCompletions()
+            )
+            self.responses = types.SimpleNamespace(
+                create=lambda **_kw: pytest.fail("GLM should not use responses.create")
+            )
+
+    fake_openai = types.SimpleNamespace(OpenAI=FakeClient)
+    monkeypatch.setitem(sys.modules, "openai", fake_openai)
+
+    agent = ExternalLLMAgent(
+        config=ProviderConfig(
+            uniapi_api_key="sk-x",
+            uniapi_base_url="https://api.uniapi.io/v1",
+            agent_model="glm-5.2",
+        )
+    )
+
+    assert agent._complete("system", "user") == '{"ok": true}'
+    assert calls
+    call = calls[0]
+    assert call["model"] == "glm-5.2"
+    assert call["max_tokens"] >= 8192
+    assert call["extra_body"]["thinking"]["type"] == "disabled"
+    assert call["extra_body"]["reasoning_effort"] == "none"
 
 
 # --- VLM verdict parsing -------------------------------------------------------

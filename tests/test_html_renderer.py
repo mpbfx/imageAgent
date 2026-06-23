@@ -25,6 +25,14 @@ def test_source_preserves_exact_text(renderer):
     assert "代码即画笔" in source
 
 
+def test_html_renderer_uses_cjk_serif_font_stack(renderer):
+    plan = FixtureAgent().conceptualize("a poster for GenClaw")
+    source = renderer.compile_source(plan)
+    assert "Noto Serif CJK SC" in source
+    assert "Source Han Serif SC" in source
+    assert "SimSun" in source
+
+
 def test_user_html_fragment_is_escaped(renderer):
     plan = CanvasPlan(
         request_id="r",
