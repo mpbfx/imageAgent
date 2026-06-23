@@ -1,14 +1,22 @@
-"""Prompt templates for external LLM agent providers.
+"""外部 LLM agent 用到的 prompt 模板。
 
-The fixture agent (:mod:`genclaw.agent.fixture`) needs none of these -- it is
-deterministic. These templates are the contract surface for the external
-provider (task 14, default Claude-Opus per ADR 0004): the agent must return
-JSON that validates as a :class:`~genclaw.schemas.CanvasPlan`, ideally via the
-provider's structured-output / function-calling mode.
+Fixture agent (:mod:`genclaw.agent.fixture`) 不需要这些——它是确定性的。
+本文件是「外部 provider 用的契约面」(task 14, 默认 Claude-Opus per ADR 0004):
+agent 必须返回能通过 :class:`~genclaw.schemas.CanvasPlan` 校验的 JSON,理想情况
+下用 provider 的 structured-output / function-calling 模式。
 
-Kept as plain strings here so the prompt wording is version-controlled and
-reviewable independently of provider wiring.
+prompt 文本保持英文且全部以普通字符串存在这里,而不是嵌入到 provider
+调用代码里——这样可以独立做版本控制、review、A/B,而不动 wiring。
 """
+
+# 中文补充说明：
+# 1) 提示词用英文是经过权衡的：英文 prompt 对主流 LLM 效果更稳,且未来若
+#    切换到非中文优化模型不需要再翻译一遍。
+# 2) prompt 强约束 schema、明确列出 allowed enums 和 check kinds——这是
+#    减少「幻觉/越界」的关键防线,任何省略或自创的 check kind 都会被
+#    reviewer 判为 unknown。
+# 3) ``code-as-brush`` 模式 (ADR 0005) 与默认结构化模式共用本文件,通过
+#    CODE_ 前缀区分；调用方按 code_mode 选不同模板组合。
 
 from __future__ import annotations
 
@@ -103,8 +111,8 @@ User prompt:
 {prompt}
 """
 
-# Appended when a prior attempt failed validation, to drive bounded retries
-# (plan task 14): the Pydantic error is fed back so the model can self-correct.
+# 之前尝试失败、需要回喂给模型做有界重试时追加(plan task 14):
+# 把 Pydantic 错误回喂给模型,让其在同一会话上下文里自我修正。
 REPAIR_PROMPT = """\
 Your previous response did not validate as a CanvasPlan. Fix it and return only
 corrected JSON. Validation errors:
@@ -114,10 +122,10 @@ Previous response:
 {previous}
 """
 
-# --- code-as-brush mode (ADR 0005) -------------------------------------------
-# Used when the agent is asked to emit a free-form `code` plan: the LLM writes
-# the SVG SOURCE directly (the "digital brush"), instead of structured fields a
-# template compiles. Phase scope: SVG only.
+# --- code-as-brush 模式(ADR 0005) -------------------------------------------
+# 当 agent 被要求产出 ``source == "code"`` 的自由形式 plan 时使用:LLM
+# 直接写 SVG **源码**("数字画笔"本身),而不是写结构化字段让模板去编译。
+# Phase 范围:目前只覆盖 SVG(后端可选 HTML / Three.js,见 renderer 派发)。
 
 CODE_SYSTEM_PROMPT = """\
 You are the cognitive + sketching layer of GenClaw operating in code-as-brush
@@ -169,15 +177,24 @@ Per code_lang, code_source must be:
 
 Draw the full scene with real coordinates; make counts and left/right/above
 relations exactly match the request.
+
+For any visible Chinese, Japanese, Korean, rare Han characters, menu text, or
+mixed CJK/Latin text, set an explicit font stack in the authored source:
+"Noto Serif CJK SC", "Source Han Serif SC", "Source Han Serif CN", "SimSun",
+"Songti SC", "Microsoft YaHei", serif. Use the same stack consistently for
+HTML/CSS and SVG text so the source and rasterized sketch use the same browser
+font fallback path. Keep text large enough to remain legible after screenshot
+rasterization.
 """
 
 CODE_DEVELOPER_PROMPT = """\
 Return ONLY the JSON object (no markdown fences, no commentary). The
-code_source field must contain a complete, valid SVG document drawing the scene.
+code_source field must contain a complete, self-contained document matching the
+chosen code_lang: SVG for "svg", HTML/CSS for "html", or a Three.js HTML host
+page for "three".
 
 Task type: {task_type}
 Request id: {request_id}
 User prompt:
 {prompt}
 """
-

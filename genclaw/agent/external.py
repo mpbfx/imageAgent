@@ -1,25 +1,32 @@
-"""External LLM agent: prompt -> validated CanvasPlan (plan task 14).
+"""外部 LLM agent:prompt -> 经过校验的 CanvasPlan（plan task 14）。
 
-This is the real cognitive structuring layer (paper §3.1) -- genuine intent
-recognition over free-form prompts, as opposed to the keyword-matching
-:class:`~genclaw.agent.fixture.FixtureAgent`. The default backbone is
-Claude-Opus (ADR 0004).
+这是真正的「认知结构化层」（paper §3.1）——对自由格式 prompt 做意图识别,
+与基于关键词匹配的 :class:`~genclaw.agent.fixture.FixtureAgent` 相对。
+默认后端为 Claude-Opus（ADR 0004）。
 
-The architecture pivot rests on the prompt->CanvasPlan contract, so reliability
-is the point of this module:
+整个架构的关键支点是「prompt -> CanvasPlan」这个契约,所以本模块的
+核心目标是「可靠性」:
 
-* The model is asked for JSON constrained to the CanvasPlan schema (via the
-  provider's structured-output / tool mode where available).
-* On a validation failure the Pydantic error is fed back and the model is asked
-  to repair, bounded to ``max_parse_retries`` attempts.
-* If it still fails, a :class:`PlanParseError` carrying the attempt history is
-  raised so the caller writes a structured error artifact -- never a silent
-  swallow or a half-built plan.
+* 强约束让模型按 CanvasPlan schema 输出 JSON（通过 provider 的
+  structured-output / tool mode）。
+* 一旦 Pydantic 校验失败,把错误信息回喂给模型,要求它修复,最多重试
+  ``max_parse_retries`` 轮。
+* 仍然失败则抛 :class:`PlanParseError`,把所有尝试历史都带出来,让
+  调用方能写一份结构化的错误 artifact——绝不静默吞掉,绝不返回半成品。
 
-The model call itself is isolated in :meth:`_complete`, so the parse/repair loop
-is unit-testable without any SDK or credentials (see the test that injects one
-bad JSON response and asserts the retry + final behavior).
+模型调用本身被隔离在 :meth:`_complete` 中,所以 parse/repair 循环可以
+在没有 SDK、没有凭据的情况下做单测（见测试中注入一条坏 JSON 响应、验证
+重试+终态行为的用例）。
 """
+
+# 中文补充说明：
+# 本文件是「真实可用的认知结构化层」。它与 fixture agent 的区别在于：
+#   - 真正调用大模型（默认 Anthropic Claude,也可走 OpenAI 兼容协议）
+#   - 容错：模型可能吐非 JSON、可能字段不齐、可能语义不合法。本模块用
+#     「重试 + 错误回喂」的方式逼模型自我修正,而不是放宽校验。
+# 替换 / 扩展建议：若要换模型或加新 provider,只要继承 ExternalLLMAgent
+# 并重写 _complete 即可；contractualize 入口（处理 system/user 提示组装、
+# 重试循环、JSON 抽取、Pydantic 校验）已经通用化,不必再改。
 
 from __future__ import annotations
 
@@ -39,9 +46,15 @@ from genclaw.agent.prompts import (
 from genclaw.config import ProviderConfig
 from genclaw.schemas import CanvasPlan, TaskType
 
+GLM_AGENT_MAX_TOKENS = 8192
+
 
 class PlanParseError(RuntimeError):
-    """Raised when the agent cannot produce a valid CanvasPlan within budget."""
+    """在 ``max_parse_retries`` 预算内仍无法产出合法 CanvasPlan 时抛出。
+
+    携带全部尝试历史 + 最后一次错误,便于调用方写结构化错误 artifact
+    或把现场（attempts / last_error）回灌给运维/调试。
+    """
 
     def __init__(self, attempts: list[str], last_error: str):
         self.attempts = attempts
@@ -53,10 +66,16 @@ class PlanParseError(RuntimeError):
 
 
 def _extract_json(text: str) -> str:
-    """Best-effort: strip markdown fences and isolate the outermost JSON object."""
+    """尽力从模型返回里抽出最外层 JSON 对象。
+
+    处理三种常见「污染」:
+      1. 包裹在 ```json ... ``` 三个反引号代码块里——剥掉首尾 fence。
+      2. JSON 前后有多余解释文字——用首个 { 与末个 } 切出对象。
+    对极端的混合输出（多个对象、嵌套错误）只取最外层一对花括号,够用即可。
+    """
     s = text.strip()
     if s.startswith("```"):
-        # Drop the opening fence (``` or ```json) and the closing fence.
+        # 剥掉开头的 fence（``` 或 ```json）和结尾的 ```。
         s = s.split("\n", 1)[1] if "\n" in s else s
         if s.rstrip().endswith("```"):
             s = s.rstrip()[:-3]
@@ -68,20 +87,20 @@ def _extract_json(text: str) -> str:
 
 
 class ExternalLLMAgent(AgentProvider):
-    """LLM-backed agent with bounded structured-output repair.
+    """LLM 驱动的 agent,带有限次 structured-output 自修复。
 
-    Subclasses / providers override :meth:`_complete`. The default
-    implementation calls Anthropic's Claude (the paper-aligned backbone) and is
-    imported lazily so the class is usable in tests without the SDK.
+    子类/provider 通过重写 :meth:`_complete` 接入任意模型 SDK；
+    默认实现调用 Anthropic Claude（与论文对齐），并采用懒加载
+    导入,因此即使没装 SDK,这个类也可以在测试里被实例化。
     """
 
     def __init__(self, config: Optional[ProviderConfig] = None, *, code_mode: bool = False):
         self.config = config or ProviderConfig.from_env()
-        # code_mode=True asks the LLM to write free-form SVG source (ADR 0005,
-        # code-as-brush) instead of a structured template plan.
+        # code_mode=True 时让 LLM 直接写 SVG 源码（ADR 0005, code-as-brush），
+        # 而不是返回结构化字段再让模板编译——画笔本身就是代码。
         self.code_mode = code_mode
 
-    # --- public contract -------------------------------------------------------
+    # --- 公开契约 ---------------------------------------------------------------
 
     def conceptualize(
         self,
@@ -91,6 +110,8 @@ class ExternalLLMAgent(AgentProvider):
     ) -> CanvasPlan:
         rid = request_id or "llm"
         tt = task_type.value if task_type else "infer the most appropriate one"
+        # 根据 code_mode 选不同 prompt 模板：模板里有「返回 JSON」还是
+        # 「返回 code_source 字段」的关键区别。
         if self.code_mode:
             system = CODE_SYSTEM_PROMPT
             user = CODE_DEVELOPER_PROMPT.format(task_type=tt, request_id=rid, prompt=prompt)
@@ -100,11 +121,14 @@ class ExternalLLMAgent(AgentProvider):
 
         attempts: list[str] = []
         last_error = ""
-        # 1 initial attempt + up to max_parse_retries repair attempts.
+        # 1 次初次尝试 + 最多 max_parse_retries 次修复尝试。
         for attempt in range(self.config.max_parse_retries + 1):
             if attempt == 0:
                 raw = self._complete(system, user)
             else:
+                # 把上一次的原始输出 + 校验错误一起回喂给模型,让它在
+                # 同一会话上下文里自我修正——大多数 Pydantic 错误（缺字段、
+                # 类型不对、枚举值不合法）都能被模型一次修正。
                 repair = REPAIR_PROMPT.format(errors=last_error, previous=attempts[-1])
                 raw = self._complete(system, user + "\n\n" + repair)
             attempts.append(raw)
@@ -115,8 +139,8 @@ class ExternalLLMAgent(AgentProvider):
                 last_error = f"response was not valid JSON: {exc}"
                 continue
 
-            # Ensure required identity fields are present/consistent even if the
-            # model omitted them; the prompt is the source of truth.
+            # 兜底: 必填的身份字段如果模型没填就补上。prompt 是事实来源,
+            # 而不是模型「猜」——这是为了让 artifact 真实可追溯。
             data.setdefault("request_id", rid)
             data.setdefault("prompt", prompt)
             if task_type is not None:
@@ -125,6 +149,7 @@ class ExternalLLMAgent(AgentProvider):
             try:
                 return CanvasPlan.model_validate(data)
             except ValidationError as exc:
+                # 校验失败不立即抛——记下错误,等下一轮重试时回喂给模型。
                 last_error = str(exc)
                 continue
 
@@ -133,21 +158,87 @@ class ExternalLLMAgent(AgentProvider):
     # --- provider boundary -----------------------------------------------------
 
     def _complete(self, system: str, user: str) -> str:
-        """Call the default backbone (Claude-Opus) and return raw text.
+        """调用 LLM 后端并返回原始文本。
 
-        Imported lazily; raises ProviderNotConfiguredError without a key.
-        Override in tests or alternative providers.
+        同时支持 Anthropic（Claude）和 OpenAI 兼容 provider（UniAPI 等）。
+        若设置了 UNIAPI_API_KEY 就走 OpenAI SDK,否则走 Anthropic SDK。
+        懒加载导入：未安装 SDK 时,会在调到这里再抛错,而不是 import 时。
         """
+        # 优先走 UniAPI (OpenAI 兼容),适合国内/自建代理场景。
+        if self.config.uniapi_api_key:
+            return self._complete_openai_compatible(system, user)
+
+        # 退到 Anthropic Claude。
+        return self._complete_anthropic(system, user)
+
+    def _complete_openai_compatible(self, system: str, user: str) -> str:
+        """调用 OpenAI 兼容 provider(UniAPI、LM Studio、vLLM 等)。"""
         try:
-            import anthropic
-        except ImportError as exc:  # pragma: no cover - exercised only without SDK
+            from openai import OpenAI
+        except ImportError as exc:
             raise RuntimeError(
-                "the 'anthropic' package is required for the default LLM agent; "
+                "the 'openai' package is required for OpenAI-compatible agents; "
                 'install the providers extra: pip install -e ".[providers]"'
             ) from exc
 
-        # anthropic_kwargs() requires the key (raises ProviderNotConfiguredError
-        # if missing) and adds base_url when an Anthropic-compatible proxy is set.
+        kwargs = self.config.uniapi_kwargs("openai-compatible-agent")
+        client = OpenAI(**kwargs)
+
+        # 检查是否是 UniAPI（通过 base_url 判断）
+        is_uniapi = "uniapi" in str(self.config.uniapi_base_url).lower()
+        is_glm = self.config.agent_model.lower().startswith("glm-")
+
+        if is_uniapi and not is_glm:
+            # UniAPI 使用独特的 responses.create() 接口
+            try:
+                combined_prompt = f"{system}\n\n{user}"
+                response = client.responses.create(
+                    model=self.config.agent_model,
+                    input=combined_prompt,
+                )
+                return response.output_text or ""
+            except AttributeError:
+                # 回退到标准 chat.completions 接口
+                pass
+
+        # 标准 OpenAI 兼容接口
+        max_tokens = GLM_AGENT_MAX_TOKENS if is_glm else 4096
+        extra_body = (
+            {"thinking": {"type": "disabled"}, "reasoning_effort": "none"}
+            if is_glm
+            else None
+        )
+        request_kwargs = {
+            "model": self.config.agent_model,
+            "max_tokens": max_tokens,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        }
+        if extra_body is not None:
+            request_kwargs["extra_body"] = extra_body
+        try:
+            message = client.chat.completions.create(
+                **request_kwargs,
+                response_format={"type": "json_object"},
+            )
+        except (TypeError, Exception):
+            # 如果 response_format 不支持，直接调用而不使用它
+            message = client.chat.completions.create(**request_kwargs)
+
+        return message.choices[0].message.content or ""
+
+    def _complete_anthropic(self, system: str, user: str) -> str:
+        """调用 Anthropic Claude 后端。"""
+        try:
+            import anthropic
+        except ImportError as exc:
+            raise RuntimeError(
+                "the 'anthropic' package is required for the Anthropic agent; "
+                'install the providers extra: pip install -e ".[providers]"'
+            ) from exc
+
         client = anthropic.Anthropic(**self.config.anthropic_kwargs("anthropic-claude-agent"))
         message = client.messages.create(
             model=self.config.agent_model,
@@ -155,7 +246,8 @@ class ExternalLLMAgent(AgentProvider):
             system=system,
             messages=[{"role": "user", "content": user}],
         )
-        # Concatenate text blocks from the response.
+        # Claude 返回的是 content 块列表(text / tool_use / image),这里只
+        # 拼接 text 块,其它忽略——能跑通结构化 JSON 输出的对话。
         return "".join(
             block.text for block in message.content if getattr(block, "type", None) == "text"
         )

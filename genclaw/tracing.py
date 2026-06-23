@@ -1,15 +1,13 @@
-"""Append-only JSONL trace writer.
+"""append-only JSONL trace 写入器。
 
-Every LangGraph node must append a trace event after it executes (plan task 3),
-recording at least the node name, an input summary, the output artifact paths,
-and any error summary. Traces are written as JSON Lines so a run can be
-inspected incrementally and is robust to a crash mid-pipeline: whatever
-completed is already on disk.
+每个 LangGraph 节点执行完后必须追加一条 trace 事件(plan task 3),
+至少记录:节点名、输入摘要、输出产物路径、错误摘要。trace 用 JSON
+Lines 格式写入,这样可以增量检查、且对中途崩溃健壮——已经写下的
+部分都还在磁盘上。
 
-The writer is deliberately tiny and dependency-free. It does not interpret the
-``data`` payload beyond JSON-serializing it, so callers own the event shape.
-Timestamps are injected by the caller (not read from the clock) to keep runs
-deterministic and reproducible in tests.
+写入器刻意保持极小、零依赖。除了 JSON 序列化之外它不解释 ``data``,
+所以事件的具体形状由调用方自己定。timestamp 由调用方注入(不读
+时钟),保证 run 的确定性和可复现性。
 """
 
 from __future__ import annotations
@@ -22,15 +20,15 @@ from typing import Any, Optional, Union
 
 @dataclass
 class TraceWriter:
-    """Appends one JSON object per line to a trace file.
+    """向 trace 文件追加 JSON Lines。
 
-    The parent directory is created on first write if missing, so the writer is
-    safe to construct before the run directory exists.
+    第一次写入时如果父目录不存在会自动创建,所以 run 目录还没建好
+    时就构造这个 writer 也是安全的。
     """
 
     path: Path
-    # Monotonic per-run sequence number, so events have a total order even when
-    # timestamps collide or are not provided.
+    # 单次 run 内单调递增的序号;即使 timestamp 撞了或没传,事件也有
+    # 一个全序。
     _seq: int = field(default=0, init=False)
 
     def __post_init__(self) -> None:
@@ -43,10 +41,10 @@ class TraceWriter:
         *,
         timestamp: Optional[str] = None,
     ) -> dict:
-        """Append a trace event for ``stage`` and return the written record.
+        """追加一条 ``stage`` 事件,返回写入的记录。
 
-        ``data`` is merged into the record; reserved keys (``seq``, ``stage``,
-        ``ts``) always win so the event envelope stays consistent.
+        ``data`` 会合并进记录;保留键(``seq`` / ``stage`` / ``ts``)
+        永远以写入器为准,事件信封保持一致。
         """
         record: dict[str, Any] = dict(data or {})
         record["seq"] = self._seq
@@ -70,10 +68,10 @@ class TraceWriter:
         error: Optional[str] = None,
         timestamp: Optional[str] = None,
     ) -> dict:
-        """Convenience wrapper for the canonical node-trace shape (plan task 3).
+        """标准节点 trace 形状的便捷包装(plan task 3)。
 
-        Records the node name, an input summary, output artifact paths, and an
-        error summary. ``artifacts`` paths are stringified for portability.
+        记录节点名、输入摘要、输出产物路径、错误摘要。``artifacts``
+        里的路径会被字符串化,便于跨平台读。
         """
         if isinstance(artifacts, dict):
             arts: Any = {k: str(v) for k, v in artifacts.items()}
@@ -93,7 +91,7 @@ class TraceWriter:
         )
 
     def read_events(self) -> list[dict]:
-        """Parse the trace file back into a list of records (for inspection)."""
+        """把 trace 文件解析回事件列表(供检查用)。"""
         if not self.path.exists():
             return []
         events = []
