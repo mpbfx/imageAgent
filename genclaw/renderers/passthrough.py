@@ -39,19 +39,12 @@ class PassthroughRenderer(Renderer):
             encoding="utf-8",
         )
 
-        # 中性空白 PNG 作 sketch:有参考图时会被 generate 节点替换。
-        png_path = output_dir / "sketch.png"
-        try:
-            from PIL import Image
-
-            Image.new("RGB", (w, h), (128, 128, 128)).save(png_path)
-        except Exception:
-            png_path = None  # Pillow 不可用时退化:generate 仍可走文生图
-
+        # passthrough 不需要 sketch 图：参考图由 generate 节点从 knowledge 下载，
+        # 若无参考图则生成器做纯文生图。不产出灰色占位图，避免混淆。
         return RenderedCanvas(
             backend=CanvasBackend.passthrough,
             source_path=source_path,
-            png_path=png_path,
+            png_path=None,
             width=w,
             height=h,
         )

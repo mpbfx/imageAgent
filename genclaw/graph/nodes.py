@@ -72,17 +72,16 @@ def _renderer_for_plan(plan: CanvasPlan) -> Renderer:
     return _renderer_for(plan.backend)
 
 
-def _download_reference_image(plan: CanvasPlan, run_dir) -> Optional[Path]:
+def _download_reference_image(plan: CanvasPlan, run_dir) -> tuple[Optional[Path], Optional[str]]:
     """从 plan.knowledge 取第一张参考图 URL,下载到 run_dir/reference.png。
 
-    没有图片 URL、下载失败、或没有 run_dir 时返回 None(静默退回 code sketch)。
-    仅用标准库 urllib,避免给 core 增加依赖。
+    返回 (path, None) 成功;(None, error_msg) 失败。
     """
     if run_dir is None:
-        return None
+        return None, "no run_dir"
     image_url = next((k.image_url for k in plan.knowledge if k.image_url), None)
     if not image_url:
-        return None
+        return None, "no image_url in knowledge"
     try:
         import urllib.request
 
@@ -91,11 +90,11 @@ def _download_reference_image(plan: CanvasPlan, run_dir) -> Optional[Path]:
         with urllib.request.urlopen(req, timeout=20) as resp:
             data = resp.read()
         if not data:
-            return None
+            return None, f"empty response from {image_url}"
         dest.write_bytes(data)
-        return dest
-    except Exception:
-        return None
+        return dest, None
+    except Exception as exc:
+        return None, f"download failed ({image_url}): {exc}"
 
 
 class GraphNodes:
@@ -261,11 +260,15 @@ class GraphNodes:
         if state.rendered_canvas is None or state.artifacts is None:
             return self._fail(state, "generate", ValueError("nothing to generate from"))
         sketch = state.rendered_canvas.png_path or state.artifacts.sketch_path
-        # 若 knowledge 里有真实参考图,下载并替换 sketch
+        # 若 knowledge 里有真实参考图,下载并替换 sketch;记录结果进 trace
         if state.plan is not None:
-            ref = _download_reference_image(state.plan, state.artifacts.run_dir)
+            ref, ref_err = _download_reference_image(state.plan, state.artifacts.run_dir)
             if ref is not None:
                 sketch = ref
+                self._record(state, "generate", input_summary=f"reference_image={ref.name}")
+            elif ref_err and "no image_url" not in ref_err and "no run_dir" not in ref_err:
+                # 有 URL 但下载失败时才记录警告,避免对无参考图任务也刷日志
+                state.errors.append(f"reference_image: {ref_err}")
         # 透传 task_type 给生成器,让生成器按任务族选 rerender 强度:
         # 文字密集 -> 温柔(保字形);材质/场景 -> 强写实
         constraints = {}
