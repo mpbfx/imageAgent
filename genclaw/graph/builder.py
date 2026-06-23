@@ -1,19 +1,28 @@
-"""LangGraph ``StateGraph`` builder (plan task 11).
+"""LangGraph ``StateGraph`` 构造器(plan task 11)。
 
-Wires the node functions (``nodes.py``) and the pure route function
-(``routes.py``) into a compiled LangGraph workflow::
+把节点函数(:mod:`nodes`)和纯路由函数(:mod:`routes`)拼成一个编译好的
+LangGraph workflow::
 
     conceptualize -> search -> render -> generate -> review -> route_after_review
                                                                 |-> revise -> render (loop)
 
-The ``search`` node grounds knowledge-bench tasks before sketching (paper
-§3.1-3.2); it is gated internally and is a no-op for non-knowledge tasks.
+``search`` 节点给知识类任务先做检索(paper §3.1-3.2),内部 gate 起来,
+对非知识类任务是 no-op。
 
-``langgraph`` is imported lazily inside :func:`build_graph` so this module --
-and the pipeline that falls back to direct sequencing -- imports without the
-orchestration stack installed (phase-1 strategy). LangGraph owns *only*
-orchestration here; every node is the same callable the direct path uses.
+``langgraph`` 在 :func:`build_graph` 里懒加载——这样本模块、还有 fallback
+到「直接顺序执行」的 pipeline 都能在没装 langgraph 的环境下 import
+(phase-1 策略)。LangGraph 在这里只负责编排,所有节点函数和直接路径
+用的是同一份可调用对象。
 """
+
+# 中文补充说明:
+# Builder 本身几乎全是声明式:声明节点、声明入口、声明边、声明条件边。
+# 关键设计点:
+#   1) 入口是 conceptualize(把自然语言变结构化 plan)
+#   2) review 之后走 route_after_review 二选一:finish 或 revise -> render
+#      形成「自我修订」循环(在 fixture 模式下 revise 是显式 no-op,见 nodes.py)
+#   3) 编译返回的是可调用对象,跟普通函数一样被 Pipeline 调用——pipeline
+#      本身不在意底下是 LangGraph 还是直接顺序。
 
 from __future__ import annotations
 
@@ -24,13 +33,14 @@ from genclaw.graph.routes import FINISH, REVISE, route_after_review
 
 
 def build_graph(nodes: GraphNodes) -> Any:
-    """Build and compile the LangGraph workflow from ``nodes``.
+    """用 ``nodes`` 构造并编译 LangGraph workflow。
 
-    Raises ``ImportError`` (with guidance) if langgraph is not installed.
+    若未安装 langgraph 则抛 ImportError,并提示用户安装或使用
+    ``Pipeline(use_langgraph=False)``。
     """
     try:
         from langgraph.graph import END, StateGraph
-    except ImportError as exc:  # pragma: no cover - exercised only without langgraph
+    except ImportError as exc:  # pragma: no cover - 仅在无 langgraph 时执行
         raise ImportError(
             "langgraph is not installed; install it or use Pipeline(use_langgraph=False)"
         ) from exc
@@ -46,14 +56,17 @@ def build_graph(nodes: GraphNodes) -> Any:
     graph.add_node("revise", nodes.revise)
 
     graph.set_entry_point("conceptualize")
+    # 主干: conceptualize -> search -> render -> generate -> review
     graph.add_edge("conceptualize", "search")
     graph.add_edge("search", "render")
     graph.add_edge("render", "generate")
     graph.add_edge("generate", "review")
+    # 条件边: review 之后由 route_after_review 决定下一步
     graph.add_conditional_edges(
         "review",
         route_after_review,
         {REVISE: "revise", FINISH: END},
     )
+    # revise 完成后回到 render,实现「修订后重画」循环
     graph.add_edge("revise", "render")
     return graph.compile()

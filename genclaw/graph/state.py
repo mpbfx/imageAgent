@@ -1,17 +1,26 @@
-"""``GenClawState`` -- the state threaded through the LangGraph workflow.
+"""``GenClawState`` -- 贯穿 LangGraph workflow 的状态对象。
 
-This is a plain Pydantic model with no langgraph dependency, so the graph
-contract is testable without the orchestration stack (lazy-import strategy).
-The main graph is::
+这是一个普通 Pydantic 模型,不带 langgraph 依赖,这样 graph 契约在没装
+编排栈的环境下也能被测试(懒加载策略)。主图::
 
     conceptualize -> render -> generate -> review -> route_after_review
                                                        |-> revise -> render (loop)
 
-Each domain payload (plan, rendered canvas, generation result, review result)
-is a typed Pydantic model so the state serializes for trace/inspection. The
-``artifacts`` handle is IO machinery (a dataclass owning paths), so it is
-excluded from serialization; ``run_dir`` is recorded separately for the record.
+每个领域的载荷(plan / rendered canvas / generation result / review result)
+都是带类型的 Pydantic 模型,方便 state 序列化进 trace / inspection。
+``artifacts`` 句柄是 IO 工具(拥有路径的 dataclass),从序列化里排除;
+``run_dir`` 单独保留到 dump 里以供审计。
 """
+
+# 中文补充说明：
+# state 字段分组:
+#   - request:request_id / prompt / task_type(任务族,agent 可覆盖)
+#   - pipeline payloads:四个 Optional,每个节点负责填一项
+#   - control:revision_count(已修订次数) + max_revisions(预算)
+#   - bookkeeping:errors + trace_events + run_dir + artifacts
+# ``artifacts`` 用 Field(exclude=True)不让它进 model_dump,但作为
+# arbitrary_types_allowed 还是允许这个 dataclass 存在,方便节点直接调
+# 它的 write_json / write_error 方法。
 
 from __future__ import annotations
 
@@ -27,10 +36,10 @@ from genclaw.schemas import CanvasPlan, ReviewResult, TaskType
 
 
 class GenClawState(BaseModel):
-    """Mutable state carried across graph nodes for one run."""
+    """单次 run 跨节点传递的可变状态。"""
 
-    # ``artifacts`` is a dataclass, not a Pydantic model; allow it but exclude
-    # it from dumps (it is reconstructible from ``run_dir``).
+    # ``artifacts`` 是 dataclass 不是 Pydantic 模型:放行它,但从 dump 里
+    # 排除(因为它由 run_dir 重建,不应当冗余存两份)。
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     # --- request ---------------------------------------------------------------
@@ -39,12 +48,14 @@ class GenClawState(BaseModel):
     task_type: Optional[TaskType] = None
 
     # --- pipeline payloads -----------------------------------------------------
+    # 每个节点只负责填自己的那一项;其它节点只读
     plan: Optional[CanvasPlan] = None
     rendered_canvas: Optional[RenderedCanvas] = None
     generation_result: Optional[GenerationResult] = None
     review_result: Optional[ReviewResult] = None
 
     # --- control ---------------------------------------------------------------
+    # revision_count:已经触发过几次 revise;max_revisions:路由函数看这个预算
     revision_count: int = 0
     max_revisions: int = 1
 
@@ -63,7 +74,7 @@ class GenClawState(BaseModel):
         task_type: Optional[TaskType] = None,
         max_revisions: int = 1,
     ) -> "GenClawState":
-        """Construct the initial state from a request."""
+        """从一次请求构造初始 state。"""
         return cls(
             request_id=request_id,
             prompt=prompt,

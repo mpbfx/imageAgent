@@ -1,19 +1,28 @@
-"""Graph node implementations (plan task 11).
+"""Graph 节点实现(plan task 11)。
 
-Each node is a plain function ``GenClawState -> GenClawState`` with no langgraph
-dependency, so the pipeline runs and tests without the orchestration stack
-installed (lazy-import strategy). LangGraph (``builder.py``) wires these same
-functions into a ``StateGraph``; the pipeline can also sequence them directly.
+每个节点都是普通函数 ``GenClawState -> GenClawState``,不直接依赖 langgraph,
+所以在没装编排栈的环境下 pipeline 也能跑也能测(懒加载策略)。LangGraph
+(``builder.py``)把这同一套函数接进 ``StateGraph``;Pipeline 也可直接顺序调
+它们。
 
-Every node appends a trace event after it executes (node name, input summary,
-output artifact paths, error summary) per the artifact-first principle, and a
-provider/backend failure leaves a structured error artifact rather than being
-swallowed (ADR 0001).
+每个节点执行后会追一条 trace 事件(节点名、输入摘要、输出 artifact 路径、
+错误摘要)——遵循 artifact-first 原则;provider / backend 失败会落一条结构化
+error artifact,而不是被吞掉(ADR 0001)。
 """
+
+# 中文补充说明：
+# 节点类把 providers 集中放在实例上,这样每个节点函数对 state 来说是「纯
+# 函数」,但可协作对象是可注入的(fixture / external 互换)。
+# 两个小工厂:
+#   - _renderer_for(backend): 按 plan 选对应 backend 的 renderer
+#   - _renderer_for_plan(plan): 先看 plan.source,「code-as-brush」走
+#     CodeRenderer(ADR 0005),其它按 backend 分派
+# ``revise`` 在 fixture 模式下是「明确不支持」的占位:递增 revision_count,
+# 记 error,但不死循环——phase 2 再接真 LLM 修订。
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Callable, Optional
 
 from genclaw.agent.base import AgentProvider
 from genclaw.generators.base import ImageGenerator
@@ -33,12 +42,12 @@ def _renderer_for(backend: CanvasBackend) -> Renderer:
     if backend is CanvasBackend.html:
         return HTMLRenderer()
     if backend is CanvasBackend.three:
-        # Imported lazily: the Three.js renderer (task 8) reaches for a browser.
+        # 懒加载:Three.js renderer(task 8)依赖浏览器,fixture 环境不一定有
         from genclaw.renderers.three import ThreeRenderer
 
         return ThreeRenderer()
     if backend in (CanvasBackend.python, CanvasBackend.canvas):
-        # Numeric physical-draft backends (paper §3.2: Python plotting / Canvas).
+        # 数值/物理草稿后端(论文 §3.2:Python plotting / Canvas)
         from genclaw.renderers.physics import PhysicsRenderer
 
         return PhysicsRenderer(backend)
@@ -46,12 +55,11 @@ def _renderer_for(backend: CanvasBackend) -> Renderer:
 
 
 def _renderer_for_plan(plan: CanvasPlan) -> Renderer:
-    """Pick a renderer by plan source first, then backend.
+    """先按 plan.source 选,再按 backend 选。
 
-    A ``source="code"`` plan is free-form code-as-brush (ADR 0005): the LLM
-    wrote the canvas source directly, so it goes to the CodeRenderer (which
-    validates + rasterizes) regardless of backend. Otherwise it's a structured
-    template plan dispatched by backend.
+    ``source="code"`` 是「code-as-brush」(ADR 0005):LLM 直接写 canvas 源
+    代码,走 CodeRenderer(校验 + 光栅化),不再看 backend。其余按
+    structured template + backend 分派。
     """
     if plan.source is CanvasSource.code:
         from genclaw.renderers.code import CodeRenderer
@@ -61,10 +69,10 @@ def _renderer_for_plan(plan: CanvasPlan) -> Renderer:
 
 
 class GraphNodes:
-    """Bundles the providers used by the node functions.
+    """节点函数用到的所有 providers 都放这里。
 
-    Holding providers on an instance keeps the node functions pure with respect
-    to their ``state`` argument while staying pluggable (fixture vs external).
+    协作对象是构造时注入的——这样节点函数对 ``state`` 仍表现为「纯」,
+    但 fixture ↔ external 切换不需要改函数体。
     """
 
     def __init__(
@@ -75,12 +83,15 @@ class GraphNodes:
         *,
         search: Optional[SearchProvider] = None,
         timestamp: str = "",
+        on_progress: Optional[Callable[[str, str, Optional[dict]], None]] = None,
     ):
         self.agent = agent
         self.generator = generator
         self.reviewer = reviewer
+        # 默认是 NullSearchProvider:对外协议有,但不做网络 I/O
         self.search = search or NullSearchProvider()
         self.timestamp = timestamp
+        self.on_progress = on_progress
 
     def _trace(self, state: GenClawState) -> Optional[TraceWriter]:
         if state.artifacts is None:
@@ -97,6 +108,9 @@ class GraphNodes:
     # --- nodes -----------------------------------------------------------------
 
     def conceptualize(self, state: GenClawState) -> GenClawState:
+        """第一节点:把用户 prompt 变 :class:`CanvasPlan`,并把 plan artifact 落盘。"""
+        if self.on_progress:
+            self.on_progress("conceptualize", "starting", None)
         try:
             plan = self.agent.conceptualize(
                 state.prompt, state.task_type, request_id=state.request_id
@@ -105,6 +119,7 @@ class GraphNodes:
             return self._fail(state, "conceptualize", exc)
 
         state.plan = plan
+        # 用 agent 给的 task_type 反向校正 state.task_type(单一真值原则)
         state.task_type = plan.task_type
         if state.artifacts is not None:
             state.artifacts.write_json(state.artifacts.plan_path, plan.model_dump(mode="json"))
@@ -114,18 +129,24 @@ class GraphNodes:
             input_summary=state.prompt,
             artifacts=[state.artifacts.plan_path] if state.artifacts else None,
         )
+        if self.on_progress:
+            self.on_progress(
+                "conceptualize",
+                "done",
+                {"objects": len(plan.objects), "backend": plan.backend.value},
+            )
         return state
 
     def search_node(self, state: GenClawState) -> GenClawState:
-        """Fill knowledge gaps via the search provider (paper §3.1-3.2).
+        """用 search provider 补齐知识缺口(论文 §3.1-3.2)。
 
-        Gated: only knowledge-grounded tasks retrieve. Retrieved facts are
-        merged into the plan's ``knowledge`` list (each with a traceable
-        ``source``) and the plan artifact is rewritten. The default
-        NullSearchProvider makes this a real-but-empty step without network I/O.
+        Gated:只有 knowledge-grounded 任务才检索;检索到的 fact 合进
+        plan.knowledge(每条带 traceable source),并重写 plan artifact。
+        NullSearchProvider 是「真但不取数」,所以这一步协议存在、行为
+        no-op,fixture / 离线环境都能跑。
         """
         if state.plan is None:
-            return state  # conceptualize failed; nothing to ground.
+            return state  # conceptualize 已经挂了,这里没东西可补
         if not self.search.should_search(state.prompt, state.plan.task_type):
             self._record(state, "search", input_summary="skipped (not knowledge-grounded)")
             return state
@@ -133,8 +154,7 @@ class GraphNodes:
         try:
             refs = self.search.search(state.prompt)
         except Exception as exc:
-            # A search failure must not kill the run; record it and continue
-            # with whatever knowledge the agent already had.
+            # search 失败不能让整个 run 挂掉:记错,继续往下走(还有 agent 自己的 knowledge)
             return self._fail(state, "search", exc, fatal=False)
 
         state.plan.knowledge.extend(refs)
@@ -151,6 +171,9 @@ class GraphNodes:
         return state
 
     def render(self, state: GenClawState) -> GenClawState:
+        """把 CanvasPlan 编译成可执行 canvas 代码并光栅化。"""
+        if self.on_progress:
+            self.on_progress("render", "starting", None)
         if state.plan is None:
             return self._fail(state, "render", ValueError("no plan to render"))
         try:
@@ -168,15 +191,23 @@ class GraphNodes:
             artifacts=[rendered.source_path]
             + ([rendered.png_path] if rendered.png_path else []),
         )
+        if self.on_progress:
+            self.on_progress(
+                "render",
+                "done",
+                {"backend": state.plan.backend.value, "has_png": rendered.png_path is not None},
+            )
         return state
 
     def generate(self, state: GenClawState) -> GenClawState:
+        """把 code sketch 当视觉条件喂给 :class:`ImageGenerator` 出 final。"""
+        if self.on_progress:
+            self.on_progress("generate", "starting", None)
         if state.rendered_canvas is None or state.artifacts is None:
             return self._fail(state, "generate", ValueError("nothing to generate from"))
         sketch = state.rendered_canvas.png_path or state.artifacts.sketch_path
-        # Pass task_type so the generator can pick rerender strength: text-heavy
-        # tasks need gentle treatment (preserve glyphs), material/scene tasks
-        # benefit from strong photorealistic re-rendering.
+        # 透传 task_type 给生成器,让生成器按任务族选 rerender 强度:
+        # 文字密集 -> 温柔(保字形);材质/场景 -> 强写实
         constraints = {}
         if state.plan is not None:
             constraints["task_type"] = state.plan.task_type.value
@@ -194,9 +225,18 @@ class GraphNodes:
             input_summary=f"provider={result.provider}",
             artifacts=[result.final_path],
         )
+        if self.on_progress:
+            self.on_progress(
+                "generate",
+                "done",
+                {"provider": result.provider},
+            )
         return state
 
     def review(self, state: GenClawState) -> GenClawState:
+        """对照 CanvasPlan 检查最终成图,落 :class:`ReviewResult` artifact。"""
+        if self.on_progress:
+            self.on_progress("review", "starting", None)
         if state.plan is None:
             return self._fail(state, "review", ValueError("no plan to review"))
         source_path = (
@@ -223,13 +263,19 @@ class GraphNodes:
             input_summary=f"passed={result.passed} score={result.score:.2f}",
             artifacts=[state.artifacts.review_path] if state.artifacts else None,
         )
+        if self.on_progress:
+            self.on_progress(
+                "review",
+                "done",
+                {"passed": result.passed, "score": float(result.score)},
+            )
         return state
 
     def revise(self, state: GenClawState) -> GenClawState:
-        """Fixture-mode revise: increment count and record it is unsupported.
+        """Fixture 模式下的 revise:递增计数 + 明确记录「不支持」。
 
-        Real revision (re-prompting the agent with review feedback) is phase 2;
-        here we make the limitation explicit rather than silently looping.
+        真正的修订(用 review 反馈重 prompt agent)是 phase 2 范围;这里
+        显式把限制说清楚,而不是让图默默死循环。
         """
         state.revision_count += 1
         msg = (
@@ -243,10 +289,10 @@ class GraphNodes:
     def _fail(
         self, state: GenClawState, node: str, exc: Exception, *, fatal: bool = True
     ) -> GenClawState:
-        """Record a node failure as a structured error artifact and on state.
+        """把节点失败记成结构化 error artifact + state 字段。
 
-        ``fatal=False`` records the error but lets the run continue (used by the
-        search node: a retrieval failure should not abort generation).
+        ``fatal=False`` 时只记录、继续往下走(给 search 节点用:检索失败
+        不应该把整个生成链拉爆)。
         """
         message = f"{type(exc).__name__}: {exc}"
         state.errors.append(f"{node}: {message}")
