@@ -9,6 +9,7 @@ from genclaw.schemas import (
     CanvasBackend,
     CanvasPlan,
     CanvasSize,
+    Intent,
     KnowledgeRef,
     TaskType,
 )
@@ -26,7 +27,18 @@ def _kg_plan(request_id="kg-1"):
 
 
 class StubAgent:
-    """Returns a fixed knowledge-grounded plan regardless of prompt."""
+    """Returns a fixed knowledge-grounded plan regardless of prompt.
+
+    模拟「LLM 主动判定需要搜」的场景:intent_classify 强制 knowledge_grounded
+    + needs_search=True,以便测试 search_node 真的被触发。
+    """
+
+    def intent_classify(self, prompt, requested_task_type=None):
+        return Intent(
+            task_type=TaskType.knowledge_grounded,
+            needs_search=True,
+            reason="stub: 强制知识接地",
+        )
 
     def conceptualize(self, prompt, task_type=None, request_id=None, knowledge=None):
         return _kg_plan(request_id or "kg-1")

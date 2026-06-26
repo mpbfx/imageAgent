@@ -51,6 +51,7 @@ def build_graph(nodes: GraphNodes) -> Any:
     from genclaw.graph.state import GenClawState
 
     graph = StateGraph(GenClawState)
+    graph.add_node("intent", nodes.intent_node)
     graph.add_node("conceptualize", nodes.conceptualize)
     graph.add_node("search", nodes.search_node)
     graph.add_node("render", nodes.render)
@@ -58,8 +59,11 @@ def build_graph(nodes: GraphNodes) -> Any:
     graph.add_node("review", nodes.review)
     graph.add_node("revise", nodes.revise)
 
-    graph.set_entry_point("search")
-    # 主干: search -> conceptualize -> render -> generate -> review
+    # 入口改成 intent:论文 §3.2 "智能体首先执行意图理解",由 LLM 决定
+    # 任务族 + 要不要搜,再决定后续走向(intent -> search -> conceptualize)。
+    graph.set_entry_point("intent")
+    # 主干: intent -> search -> conceptualize -> render -> generate -> review
+    graph.add_edge("intent", "search")
     # search 前置:先检索知识,conceptualize 带着事实写代码(论文 §3.1-3.2)
     graph.add_edge("search", "conceptualize")
     graph.add_edge("conceptualize", "render")

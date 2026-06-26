@@ -26,13 +26,14 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from genclaw.agent.base import AgentProvider
+from genclaw.agent.external import _format_knowledge
 from genclaw.generators.base import ImageGenerator
 from genclaw.graph.state import GenClawState
 from genclaw.renderers.base import Renderer
 from genclaw.renderers.html import HTMLRenderer
 from genclaw.renderers.svg import SVGRenderer
 from genclaw.review.base import Reviewer
-from genclaw.schemas import CanvasBackend, CanvasPlan, CanvasSource, TaskType
+from genclaw.schemas import CanvasBackend, CanvasPlan, CanvasSource, Intent, TaskType
 from genclaw.search import NullSearchProvider, SearchProvider
 from genclaw.tracing import TraceWriter
 
@@ -198,6 +199,61 @@ class GraphNodes:
             )
         return state
 
+    def intent_node(self, state: GenClawState) -> GenClawState:
+        """论文 §3.2 意图理解:由 LLM(或 fixture)主动判断要不要搜索。
+
+        这是 *最前面* 的节点(在 search_node 之前):
+          - external 模式:agent 调 LLM,返回 {task_type, needs_search, reason}
+          - fixture 模式:agent 用关键词查表
+
+        把 task_type 同步到 state.task_type,让后续 search_node / conceptualize
+        用一致的任务族;把 needs_search 同步到 state.needs_search,作为
+        search_node 的唯一开关(替代原 should_search() 的正则启发式)。
+
+        失败处理:non-fatal——记 error,继续往下走(把 needs_search 设为 False,
+        等于「不知道,先不搜」),让 search 节点空跑,conceptualize 仍能写 plan。
+        """
+        if self.on_progress:
+            self.on_progress("intent", "starting", None)
+        try:
+            intent = self.agent.intent_classify(
+                state.prompt, requested_task_type=state.task_type
+            )
+        except Exception as exc:
+            # LLM 挂了也不能让整个 run 挂掉:落一条 error,保守不搜。
+            if self.on_progress:
+                self.on_progress("intent", "failed", {"error": str(exc)})
+            self._record(state, "intent", error=str(exc))
+            return self._fail(state, "intent", exc, fatal=False)
+
+        state.intent = intent
+        state.needs_search = intent.needs_search
+        # 单一真值:intent 判定的 task_type 覆盖 user 传入的(若 user 传了)
+        if state.task_type is None:
+            state.task_type = intent.task_type
+
+        if state.artifacts is not None:
+            state.artifacts.write_json(
+                state.artifacts.run_dir / "intent.json",
+                intent.model_dump(mode="json"),
+            )
+        self._record(
+            state,
+            "intent",
+            input_summary=f"task_type={intent.task_type.value} needs_search={intent.needs_search}",
+        )
+        if self.on_progress:
+            self.on_progress(
+                "intent",
+                "done",
+                {
+                    "task_type": intent.task_type.value,
+                    "needs_search": intent.needs_search,
+                    "reason": intent.reason,
+                },
+            )
+        return state
+
     def search_node(self, state: GenClawState) -> GenClawState:
         """用 search provider 补齐知识缺口(论文 §3.1-3.2)。
 
@@ -205,15 +261,16 @@ class GraphNodes:
         conceptualize 再带着这些事实写代码——这样搜索结果真正参与生成,而不是
         画完才补一份用不上的知识。
 
-        Gated:只有判定需要知识接地的 prompt 才检索(prompt 启发式 + task_type,
-        此时 task_type 可能为 None,gate 主要靠 prompt 里的具名实体)。
+        Gated:由 *intent_node*(LLM 主动判断)决定是否需要知识接地,不再用
+        should_search() 的正则启发式——论文 §3.2 说「智能体会调用搜索工具
+        补全相关事实」,意思是 agent 自己判断,不是外部正则。
         NullSearchProvider 是「真但不取数」,所以这一步协议存在、行为 no-op,
         fixture / 离线环境都能跑。
         """
-        if not self.search.should_search(state.prompt, state.task_type):
+        if not state.needs_search:
             if self.on_progress:
                 self.on_progress("search", "skipped", None)
-            self._record(state, "search", input_summary="skipped (not knowledge-grounded)")
+            self._record(state, "search", input_summary="skipped (intent: no search needed)")
             return state
 
         if self.on_progress:
@@ -298,9 +355,20 @@ class GraphNodes:
         constraints = {}
         if state.plan is not None:
             constraints["task_type"] = state.plan.task_type.value
+            constraints["backend"] = state.plan.backend.value
+            constraints["source"] = state.plan.source.value
+            if state.plan.code_lang:
+                constraints["code_lang"] = state.plan.code_lang
+        # 把 search 阶段检索到的文本事实拼到 prompt 里(对应论文 §3.2:
+        # "agent 会调用搜索工具补全相关事实"),让图像生成器在最终出图时
+        # 能拿到实体的真实外观/属性,而非仅靠 LLM 写 plan 时揣测。
+        augmented_prompt = state.prompt
+        knowledge_block = _format_knowledge(state.plan.knowledge if state.plan else None)
+        if knowledge_block:
+            augmented_prompt = state.prompt + "\n" + knowledge_block
         try:
             result = self.generator.generate(
-                state.prompt, sketch, state.artifacts.final_path, constraints
+                augmented_prompt, sketch, state.artifacts.final_path, constraints
             )
         except Exception as exc:
             return self._fail(state, "generate", exc)

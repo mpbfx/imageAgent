@@ -44,7 +44,7 @@ from genclaw.agent.prompts import (
     SYSTEM_PROMPT,
 )
 from genclaw.config import ProviderConfig
-from genclaw.schemas import CanvasPlan, TaskType
+from genclaw.schemas import CanvasPlan, Intent, TaskType
 
 GLM_AGENT_MAX_TOKENS = 8192
 
@@ -166,6 +166,95 @@ class ExternalLLMAgent(AgentProvider):
         self.code_mode = code_mode
 
     # --- 公开契约 ---------------------------------------------------------------
+
+    def intent_classify(
+        self,
+        prompt: str,
+        requested_task_type: Optional[TaskType] = None,
+    ) -> Intent:
+        """论文 §3.2 意图理解的 LLM 实现:让 agent 自己判断要不要搜。
+
+        走一次轻量 LLM 调用,system/user prompt 内联在本方法里(短,
+        只问 4 选 1 + bool,延迟与 token 都低)。失败时退到原来的
+        关键词启发式,不挂整条 pipeline。
+        """
+        system = (
+            "You are the intent classifier for GenClaw. Reply with ONLY a JSON object, "
+            "no prose, no markdown fence.\n\n"
+            "Schema:\n"
+            '{"task_type": "composition" | "long_text" | "physical_reasoning" '
+            '| "editing" | "knowledge_grounded",\n'
+            ' "needs_search": true | false,\n'
+            ' "reason": "<one-sentence justification>"}\n\n'
+            "Decision rules:\n"
+            '- knowledge_grounded + needs_search=true when the prompt names a specific '
+            'real-world entity whose accurate depiction depends on facts the model '
+            'cannot reliably recall (named person, brand, product model, landmark, '
+            'flag, sports team, real event with precise date/score, long-tail '
+            'cultural object, current events).\n'
+            "- long_text: poster / card / menu / document / infographic (text-driven). "
+            "Usually needs_search=false.\n"
+            "- physical_reasoning: geometry / physics / optics / mirror / 3D viewpoint. "
+            "needs_search=false.\n"
+            "- composition: object counting / spatial relations / abstract arrangement. "
+            "needs_search=false.\n"
+            "- editing: modify / recolor / resize / remove part of an input image. "
+            "needs_search=false (the input image is the source of truth).\n\n"
+            "Default: needs_search=false. Only flip it to true when confident the "
+            "prompt references facts that benefit from a fresh web lookup."
+        )
+        user = (
+            f"requested_task_type: "
+            f"{requested_task_type.value if requested_task_type else 'infer'}\n"
+            f"user_prompt: {prompt}\n\n"
+            "Return ONLY the JSON object, no extra text."
+        )
+        try:
+            raw = self._complete(system, user)
+        except Exception as exc:
+            return self._intent_fallback(prompt, requested_task_type, reason=f"llm_error: {exc}")
+
+        try:
+            data = json.loads(_extract_json(raw))
+        except json.JSONDecodeError as exc:
+            return self._intent_fallback(
+                prompt, requested_task_type, reason=f"json_parse_error: {exc}"
+            )
+
+        if "task_type" not in data and requested_task_type is not None:
+            data["task_type"] = requested_task_type.value
+        data.setdefault("needs_search", False)
+        data.setdefault("reason", "")
+
+        try:
+            return Intent.model_validate(data)
+        except ValidationError as exc:
+            return self._intent_fallback(
+                prompt, requested_task_type, reason=f"validate_error: {exc}"
+            )
+
+    def _intent_fallback(
+        self,
+        prompt: str,
+        requested_task_type: Optional[TaskType],
+        *,
+        reason: str,
+    ) -> Intent:
+        """LLM 挂了时的降级:沿用原来 external agent 的关键词启发式。
+
+        旧版的 _should_knowledge_ground() 现在降级为 fallback,主路径是
+        LLM intent_classify——这样 LLM 不可用时整条 pipeline 仍能跑通。
+        """
+        needs_search = _should_knowledge_ground(prompt)
+        task_type = (
+            requested_task_type
+            or (TaskType.knowledge_grounded if needs_search else TaskType.composition)
+        )
+        return Intent(
+            task_type=task_type,
+            needs_search=needs_search,
+            reason=f"fallback: {reason}",
+        )
 
     def conceptualize(
         self,

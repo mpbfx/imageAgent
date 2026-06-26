@@ -46,6 +46,8 @@ def build_providers(mode: str, search_provider: Optional[str] = None):
       LLM 直接写 SVG / HTML / Three.js 源码(论文核心机制)。Claude-Opus
       agent、图像生成器、VLM 审查者、搜索 provider(默认 Tavily,可选 Serper)。
       凭据缺失时 adapter 抛 :class:`ProviderNotConfiguredError`。
+    * ``external-tele`` —— 与 ``external`` 相同的 agent / reviewer / search，
+      但图像生成器改用自托管 TeleImage SSH 后端(tele-img2img)。
     * ``external-template`` —— 同样的栈,但 agent 产*结构化*模板
       plan,不再产自由形式代码。是确定性兜底 / 基线,不会执行模型
       写的代码。
@@ -68,22 +70,21 @@ def build_providers(mode: str, search_provider: Optional[str] = None):
             RuleReviewer(),
             search,
         )
-    if mode in ("external", "external-code", "external-template"):
+    if mode in ("external", "external-code", "external-template", "external-tele"):
         from genclaw.agent.external import ExternalLLMAgent
         from genclaw.generators.external import (
             GeminiImageGenerator,
             OpenAICompatImageGenerator,
             UniAPIImageEditGenerator,
         )
+        from genclaw.generators.tele import TeleImg2ImgGenerator
         from genclaw.review.composite import CompositeReviewer
         from genclaw.review.vlm import VLMReviewer
 
         cfg = ProviderConfig.from_env()
-        # 根据 provider 配置挑选生成器:
-        # 1. 配了 UniAPI(走 Qwen 图像编辑)就用 UniAPI
-        # 2. 配了 OpenAI 兼容(自定义 GOOGLE_BASE_URL 或 legacy)就用 OpenAI 兼容
-        # 3. 默认 Gemini
-        if cfg.uniapi_api_key:
+        if mode == "external-tele":
+            generator = TeleImg2ImgGenerator()
+        elif cfg.uniapi_api_key:
             generator = UniAPIImageEditGenerator()
         elif cfg.google_base_url or cfg.uniapi_api_key:
             generator = OpenAICompatImageGenerator()
@@ -93,9 +94,8 @@ def build_providers(mode: str, search_provider: Optional[str] = None):
         # 结构检查跑在 canvas 源码上;VLM 只看最终成图的感知保真度
         # (见 CompositeReviewer)。
         reviewer = CompositeReviewer(perceptual=VLMReviewer())
-        # code-as-brush 是真实模型的**默认**(ADR 0003/0005):论文是
-        # "code-driven",所以 external == code-as-brush。只有
-        # external-template 走结构化模板路径。
+        # code-as-brush 是真实模型 external 的默认；external-tele 复用
+        # 同一认知/草图机制，只把图像生成后端切到自托管 TeleImage。
         code_mode = mode != "external-template"
         agent = ExternalLLMAgent(code_mode=code_mode)
 
@@ -123,7 +123,7 @@ def build_providers(mode: str, search_provider: Optional[str] = None):
         )
     raise ValueError(
         f"unknown mode {mode!r}; expected 'fixture', 'external', "
-        "'external-code', or 'external-template'"
+        "'external-code', 'external-tele', or 'external-template'"
     )
 
 
@@ -231,7 +231,9 @@ class Pipeline:
 
     def _run_direct(self, nodes: GraphNodes, state: GenClawState, skip_review: bool = False) -> GenClawState:
         """直接按顺序执行节点,镜像 LangGraph 的边和路由。"""
-        # search 前置:先检索知识,再让 LLM 带着这些事实写代码(论文 §3.1-3.2)
+        # intent 前置:论文 §3.2 智能体先做意图理解(LLM 判定 task_type +
+        # needs_search),再决定要不要搜——替代原 search 节点的正则启发式。
+        state = nodes.intent_node(state)
         state = nodes.search_node(state)
         state = nodes.conceptualize(state)
         if state.plan is None:  # conceptualize 失败;停,error 已写。

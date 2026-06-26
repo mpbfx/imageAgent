@@ -32,7 +32,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from genclaw.artifacts import RunArtifacts
 from genclaw.generators.base import GenerationResult
 from genclaw.renderers.base import RenderedCanvas
-from genclaw.schemas import CanvasPlan, KnowledgeRef, ReviewResult, TaskType
+from genclaw.schemas import CanvasPlan, Intent, KnowledgeRef, ReviewResult, TaskType
 
 
 class GenClawState(BaseModel):
@@ -46,6 +46,13 @@ class GenClawState(BaseModel):
     request_id: str
     prompt: str
     task_type: Optional[TaskType] = None
+
+    # --- intent classification (intent_node) -----------------------------------
+    # 由 LLM(论文 §3.2)或 fixture 关键词判定:这个 prompt 要不要搜索?
+    # 替代原 search.should_search() 的正则启发式。conceptualize 节点
+    # 也会从 intent.task_type 校准 task_type(单一真值原则)。
+    intent: Optional[Intent] = None
+    needs_search: bool = False
 
     # --- pipeline payloads -----------------------------------------------------
     # 每个节点只负责填自己的那一项;其它节点只读

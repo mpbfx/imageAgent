@@ -46,7 +46,9 @@ def test_langgraph_workflow_runs_end_to_end(tmp_path):
 
     lines = state.artifacts.trace_path.read_text(encoding="utf-8").splitlines()
     stages = [json.loads(line)["stage"] for line in lines]
-    # Node order through the compiled graph (search runs but no-ops for
-    # non-knowledge tasks).
-    assert stages[:5] == ["conceptualize", "search", "render", "generate", "review"]
+    # Node order through the compiled graph:
+    #   intent (LLM 主动判定) -> search -> conceptualize -> render -> generate -> review
+    # 论文 §3.2:智能体先做意图理解,再决定要不要搜——search 在
+    # needs_search=False 时空跑(NullSearchProvider 走 no-op 分支)。
+    assert stages[:6] == ["intent", "search", "conceptualize", "render", "generate", "review"]
     assert state.review_result.passed is True

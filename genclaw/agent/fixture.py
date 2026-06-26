@@ -32,6 +32,7 @@ from genclaw.schemas import (
     CanvasPlan,
     CanvasSize,
     CanvasSource,
+    Intent,
     LayerSpec,
     ObjectSpec,
     RelationSpec,
@@ -70,6 +71,53 @@ class FixtureAgent(AgentProvider):
         raise FixtureAgentError(
             f"no fixture plan for prompt {prompt!r}; "
             "known keywords: 'three red circles', 'poster', 'mirror', 'menu'"
+        )
+
+    def intent_classify(
+        self,
+        prompt: str,
+        requested_task_type: Optional[TaskType] = None,
+    ) -> Intent:
+        """Fixture 版意图分类:沿用关键词,无凭据也能跑(论文 §3.2 的降级路径)。
+
+        不调 LLM——fixture 的整个哲学就是「确定性、无凭据」。判断逻辑:
+        - task_type:看 prompt 命中的 fixture 关键词;未知 prompt 退回 composition
+        - needs_search:任何含具名/品牌/菜名/地点的 prompt 都标 True,
+          让 search 节点真去跑(NullSearchProvider 默认空返,不破坏离线)
+        - reason:把判断理由写明,落 trace 供审计
+        """
+        low = prompt.lower()
+        if "菜单" in prompt or "menu" in low:
+            return Intent(
+                task_type=TaskType.knowledge_grounded,
+                needs_search=True,
+                reason="fixture: 命中 'menu/菜单' 关键词,菜单类需要查菜品事实",
+            )
+        if "poster" in low:
+            return Intent(
+                task_type=TaskType.long_text,
+                needs_search=False,
+                reason="fixture: 'poster' 是排版/长文任务,无具名实体",
+            )
+        if "mirror" in low:
+            return Intent(
+                task_type=TaskType.physical_reasoning,
+                needs_search=False,
+                reason="fixture: 'mirror' 是物理/反射场景,纯几何推理",
+            )
+        if "three red circles" in low:
+            return Intent(
+                task_type=TaskType.composition,
+                needs_search=False,
+                reason="fixture: 'three red circles' 是组合计数,无具名实体",
+            )
+        # 未知 prompt:沿用 conceptualize 的 FixtureAgentError 不太合适
+        # (intent_classify 比 conceptualize 更轻量,允许「不知道」),
+        # 退到 composition + 不搜,让后续 conceptualize 抛错给用户看。
+        return Intent(
+            task_type=requested_task_type or TaskType.composition,
+            needs_search=False,
+            reason="fixture: 未命中任何已知关键词,保守判定不搜",
         )
 
 

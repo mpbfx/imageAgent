@@ -171,6 +171,20 @@ class ReasoningStep(BaseModel):
     values: dict = Field(default_factory=dict)
 
 
+class Intent(BaseModel):
+    """意图分类节点(Intent Node)的轻量输出(论文 §3.2:智能体主动判断)。
+
+    在 search 节点 *之前* 产出,由 LLM(或 fixture)根据 prompt 语义判定:
+    - ``task_type``:任务族(可与 user 传入的 task_type 不同,LLM 自主判别)
+    - ``needs_search``:是否需要调用 search provider 补齐认知空白
+    - ``reason``:一句话理由,落到 trace 上供审计
+    """
+
+    task_type: TaskType
+    needs_search: bool
+    reason: str = ""
+
+
 class CanvasPlan(BaseModel):
     """renderer 与 reviewer 共享的中心契约。
 
