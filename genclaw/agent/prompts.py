@@ -20,6 +20,17 @@ prompt 文本保持英文且全部以普通字符串存在这里,而不是嵌入
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class PromptBundle:
+    """System/developer prompt pair ready to send to a chat model."""
+
+    system: str
+    developer: str
+
+
 SYSTEM_PROMPT = """\
 You are the cognitive structuring layer of GenClaw, a code-driven image
 generation system. Convert the user's natural-language request into a single
@@ -44,6 +55,10 @@ Allowed enums (use these exact lowercase strings):
   you must depict faithfully: a named product/model (e.g. "Xiaomi Vision GranTurismo"),
   brand, logo, real person, landmark, flag, or any long-tail factual subject where
   you would otherwise be guessing the appearance. This triggers a search step.
+- needs_search: true only when fresh/reference search would improve factual
+  accuracy for a named real-world entity, current/datable event, landmark,
+  brand/product, person, flag/emblem, menu/cuisine, or other long-tail factual
+  subject. Otherwise false.
 - backend: "svg" (object count / layout / spatial relations / local edits)
   | "html" (long text, posters, cards, pages) | "three" (3D geometry / physics
   / viewpoint -- NOT for photorealistic scenes) | "python" (matplotlib numeric
@@ -115,7 +130,7 @@ describe objects/values that are actually present in this plan.
 DEVELOPER_PROMPT = """\
 Return ONLY a JSON object matching the CanvasPlan schema. Do not wrap it in
 markdown fences or add commentary. Required fields: request_id, prompt,
-task_type, backend, size. Use source="structured" with explicit
+task_type, needs_search, backend, size. Use source="structured" with explicit
 layers/objects/text/relations unless instructed to emit free-form code.
 
 BACKEND-SPECIFIC EXAMPLES:
@@ -125,6 +140,7 @@ SVG (composition, spatial relations):
   "request_id": "three-circles-001",
   "prompt": "three circles: red on left, green in center, blue on right",
   "task_type": "composition",
+  "needs_search": false,
   "backend": "svg",
   "source": "structured",
   "size": {{"width": 600, "height": 400}},
@@ -156,6 +172,7 @@ HTML (long text, documents, menus):
   "request_id": "poster-001",
   "prompt": "poster titled Hello with one subtitle",
   "task_type": "long_text",
+  "needs_search": false,
   "backend": "html",
   "source": "structured",
   "size": {{"width": 800, "height": 1100}},
@@ -181,6 +198,7 @@ Three.js (3D geometry, physics, reflections):
   "request_id": "mirror-spheres-001",
   "prompt": "two reflective spheres in front of a mirror with lighting",
   "task_type": "physical_reasoning",
+  "needs_search": false,
   "backend": "three",
   "source": "structured",
   "size": {{"width": 1024, "height": 768}},
@@ -239,6 +257,17 @@ mode. You draw by WRITING SOURCE CODE directly -- code is your brush. The code
 is a structural sketch: get object counts, positions, sizes, spatial relations,
 and text exactly right; a downstream image model adds realistic texture and
 lighting later.
+
+The authored canvas must be a sparse structural sketch and a low-fidelity structural guide, not a finished illustration.
+Use placeholder silhouettes and the minimum visible geometry needed to preserve constraints.
+Only draw the minimum geometry needed for the image model and reviewer to understand layout, counts, text, and spatial relationships.
+Do NOT simulate texture, gradients, shadows, highlights, surface detail, or painterly effects in the sketch.
+Do NOT break one semantic object into many tiny paths unless the task explicitly requires those pieces.
+Keep total shape count low.
+Start flat and simple by default.
+Do NOT add explanatory labels unless the user explicitly asks for labels or the task is a chart/diagram/poster where text is part of the image.
+Treat infographics, playful cartoons, posters, and diagrammatic scenes as structure-first canvases.
+Never emit <linearGradient>, <radialGradient>, <filter>, <pattern>, or <mask> for SVG sketches.
 
 TASK TYPE -- pick knowledge_grounded whenever the prompt names a SPECIFIC
 real-world entity you must depict faithfully but cannot reliably draw from
@@ -357,8 +386,8 @@ TEXT, or mainly placing SHAPES?" Text -> html. Shapes -> svg.
 Return ONLY a single JSON object with these fields:
 - request_id, prompt, task_type ("composition"|"long_text"|"physical_reasoning"
   |"editing"|"knowledge_grounded"), backend ("svg"|"html"|"three"|"python"|"passthrough"),
-  source ("code"), code_lang ("svg"|"html"|"three"|"python" or null for passthrough),
-  size {"width":int,"height":int}, and
+  needs_search (boolean), source ("code"), code_lang ("svg"|"html"|"three"|"python"
+  or null for passthrough), size {"width":int,"height":int}, and
   code_source: a COMPLETE, self-contained document as a string (or null for passthrough).
 
 Per code_lang, code_source must be:
@@ -473,3 +502,49 @@ User prompt:
 {prompt}
 {knowledge_context}
 """
+
+
+def build_structured_prompt_bundle(
+    *,
+    task_type: str,
+    request_id: str,
+    prompt: str,
+    knowledge_context: str = "",
+) -> PromptBundle:
+    """Return formatted prompts for schema-first planning mode."""
+
+    return PromptBundle(
+        system=SYSTEM_PROMPT,
+        developer=DEVELOPER_PROMPT.format(
+            task_type=task_type,
+            request_id=request_id,
+            prompt=prompt,
+            knowledge_context=knowledge_context,
+        ),
+    )
+
+
+def build_code_prompt_bundle(
+    *,
+    task_type: str,
+    request_id: str,
+    prompt: str,
+    knowledge_context: str = "",
+) -> PromptBundle:
+    """Return formatted prompts for code-as-brush planning mode."""
+
+    return PromptBundle(
+        system=CODE_SYSTEM_PROMPT,
+        developer=CODE_DEVELOPER_PROMPT.format(
+            task_type=task_type,
+            request_id=request_id,
+            prompt=prompt,
+            knowledge_context=knowledge_context,
+        ),
+    )
+
+
+def build_repair_prompt(*, errors: str, previous: str) -> str:
+    """Return the validation repair prompt for a failed model response."""
+
+    return REPAIR_PROMPT.format(errors=errors, previous=previous)

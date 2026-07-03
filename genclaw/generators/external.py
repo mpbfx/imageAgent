@@ -28,6 +28,14 @@ from genclaw.config import ProviderConfig
 from genclaw.generators.base import GenerationResult, ImageGenerator
 
 
+def _openai_compat_api_base(base_url: str) -> str:
+    """Normalize OpenAI-compatible base URLs so '/v1' is not duplicated later."""
+    base = base_url.rstrip("/")
+    if base.endswith("/v1"):
+        return base[:-3]
+    return base
+
+
 class GeminiImageGenerator(ImageGenerator):
     """Gemini-Flash-Image 生成器（论文对齐的默认生成器）。
 
@@ -64,11 +72,9 @@ class GeminiImageGenerator(ImageGenerator):
 
         # 若用户配了 GOOGLE_BASE_URL（如自建代理/网关），就走代理；
         # 否则用 google-genai 的默认 endpoint。
-        http_options = (
-            genai_types.HttpOptions(base_url=self.config.google_base_url)
-            if self.config.google_base_url
-            else None
-        )
+        http_options = None
+        if self.config.google_base_url and not self.config.force_native_gemini:
+            http_options = genai_types.HttpOptions(base_url=self.config.google_base_url)
         client = genai.Client(api_key=api_key, http_options=http_options)
         sketch_bytes = sketch_path.read_bytes()
         # Gemini 的多模态调用：把图像内联进 contents,跟文本指令一起送。
@@ -99,14 +105,86 @@ class GeminiImageGenerator(ImageGenerator):
 
 def _instruction(prompt: str, constraints: dict | None) -> str:
     """构造给生成模型的「以 sketch 为结构条件」的指令文本。"""
+    task_type = str((constraints or {}).get("task_type", "")).lower()
+    backend = str((constraints or {}).get("backend", "")).lower()
+    style = _style_directive(prompt, task_type)
+    strength = _rerender_strength(prompt, constraints)
+
     base = (
-        "Use the provided sketch as a strict structural condition: keep object "
-        "counts, positions, and layout exactly as drawn. Complete materials, "
-        "texture, and lighting to render a photorealistic image of: " + prompt
+        "Use the provided sketch as a structural guide: Preserve only the "
+        "semantic structure. Preserve the number of main objects, their relative "
+        "positions, the overall layout, and all readable text and labels. "
+        "Do not copy the sketch's flat vector "
+        "rendering literally; it is a layout guide, not the final visual style. "
+        f"Render the final image in this style: {style}. "
     )
+    if strength == "low":
+        base += (
+            "Use a conservative redraw: keep text glyphs and layout very stable, "
+            "and improve only spacing, polish, contrast, and light visual styling. "
+        )
+    elif strength == "high":
+        base += (
+            "Completely redraw the image in the requested style. Do not preserve "
+            "exact colors, outlines, flat shapes, character drawings, or SVG "
+            "styling. "
+        )
+    else:
+        base += (
+            "Redraw the image noticeably. Avoid copying exact vector styling, "
+            "but keep the semantic layout stable. "
+        )
+    if backend == "svg" or task_type in {"composition", "long_text"}:
+        base += (
+            "You may redesign colors, line quality, character details, shading, "
+            "and visual polish as long as the structure and required text remain "
+            "correct. "
+        )
+    else:
+        base += (
+            "Complete the visual details, materials, texture, and lighting while "
+            "respecting the structure. "
+        )
+    base += "User request: " + prompt
     if constraints:
         base += f"\nConstraints: {constraints}"
     return base
+
+
+def _style_directive(prompt: str, task_type: str) -> str:
+    p = prompt.lower()
+    if any(k in p for k in ("photorealistic", "photo", "photograph", "cinematic", "写实", "照片", "摄影")):
+        return "photorealistic, polished, natural lighting"
+    if any(k in p for k in ("infographic", "信息图", "diagram", "图解")):
+        if any(k in p for k in ("cartoon", "卡通", "playful", "趣味")):
+            return "playful cartoon infographic"
+        return "clean polished infographic"
+    if any(k in p for k in ("cartoon", "卡通", "cute", "可爱", "playful", "趣味")):
+        return "playful cartoon illustration"
+    if any(k in p for k in ("poster", "海报")):
+        return "polished poster illustration"
+    if task_type == "long_text":
+        return "clean readable graphic design"
+    return "polished illustration matching the user's requested style"
+
+
+def _rerender_strength(prompt: str, constraints: dict | None) -> str:
+    """Return low/medium/high redraw strength for sketch-conditioned generation."""
+    c = constraints or {}
+    task_type = str(c.get("task_type", "")).lower()
+    backend = str(c.get("backend", "")).lower()
+    p = prompt.lower()
+    if task_type == "long_text" or backend == "html":
+        return "low"
+    if backend == "svg" and task_type in {"composition", "knowledge_grounded", ""}:
+        return "high"
+    if task_type in {"scene", "material", "editing"}:
+        return "high"
+    if any(k in p for k in ("infographic", "信息图", "cartoon", "卡通", "playful", "趣味")):
+        return "high"
+    if any(k in p for k in ("photorealistic", "photo", "photograph", "cinematic", "写实", "照片", "摄影")):
+        return "high"
+    return "medium"
 
 
 def _first_image_bytes(response) -> Optional[bytes]:
@@ -154,15 +232,16 @@ class OpenAICompatImageGenerator(ImageGenerator):
         import json
         import urllib.request
 
-        # 决定走哪一组凭据:有 UniAPI key 就走 UniAPI,否则退到 Gemini 代理。
+        # 决定走哪一组凭据:Gemini 模型强制走 Google 凭据,其它模型才用 UniAPI。
         # 两者都遵循 OpenAI 兼容协议,multipart body 完全相同,只是 base_url
         # 和 token 来源不同。
-        if self.config.uniapi_api_key:
+        is_gemini = self.config.generator_model.lower().startswith("gemini")
+        if self.config.uniapi_api_key and not is_gemini:
             api_key = self.config.require_uniapi(self.name)
-            base = (self.config.uniapi_base_url or "https://api.openai.com").rstrip("/")
+            base = _openai_compat_api_base(self.config.uniapi_base_url or "https://api.openai.com")
         else:
             api_key = self.config.require_google(self.name)
-            base = (self.config.google_base_url or "https://api.openai.com").rstrip("/")
+            base = _openai_compat_api_base(self.config.google_base_url or "https://api.openai.com")
 
         sketch_path = Path(sketch_path)
         output_path = Path(output_path)
@@ -179,13 +258,39 @@ class OpenAICompatImageGenerator(ImageGenerator):
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": content_type},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=180) as resp:
-            payload = json.loads(resp.read())
+        try:
+            with urllib.request.urlopen(req, timeout=180) as resp:
+                payload = json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            error_body = exc.read().decode("utf-8", errors="replace")
+            if _should_fallback_to_async_video_api(
+                status_code=exc.code,
+                error_body=error_body,
+                base_url=base,
+                model=self.config.generator_model,
+            ):
+                payload = _generate_via_async_video_api(
+                    base=base,
+                    api_key=api_key,
+                    model=self.config.generator_model,
+                    prompt=_instruction(prompt, constraints),
+                    sketch_bytes=sketch_path.read_bytes(),
+                )
+            else:
+                raise RuntimeError(
+                    f"image endpoint returned {exc.code}: {error_body}"
+                ) from exc
 
         image_bytes = _decode_image_payload(payload)
         if image_bytes is None:
             raise RuntimeError(f"image endpoint returned no usable image: {payload}")
         output_path.write_bytes(image_bytes)
+
+        endpoint = (
+            f"{base}/v1/videos"
+            if payload.get("_genclaw_endpoint") == "async-video"
+            else f"{base}/v1/images/edits"
+        )
 
         return GenerationResult(
             final_path=output_path,
@@ -193,7 +298,7 @@ class OpenAICompatImageGenerator(ImageGenerator):
             sketch_path=sketch_path,
             metadata={
                 "model": self.config.generator_model,
-                "endpoint": f"{base}/v1/images/edits",
+                "endpoint": endpoint,
                 "prompt": prompt,
                 "constraints": constraints or {},
             },
@@ -235,11 +340,86 @@ def _decode_image_payload(payload: dict) -> Optional[bytes]:
     if item.get("b64_json"):
         return base64.b64decode(item["b64_json"])
     # 部分代理只给 URL,需要再发一次 GET 拉回图像。
-    url = item.get("url")
+    url = item.get("url") or item.get("image_url") or item.get("result_url")
     if url:
         with urllib.request.urlopen(url, timeout=180) as resp:
             return resp.read()
     return None
+
+
+def _should_fallback_to_async_video_api(
+    *, status_code: int, error_body: str, base_url: str, model: str
+) -> bool:
+    """Return True when an image proxy rejects /images/edits and wants async /videos."""
+    if status_code != 403:
+        return False
+    body = error_body.lower()
+    if "1010" not in body:
+        return False
+    if not model.lower().startswith("gemini"):
+        return False
+    return "qlhazycoder.top" in base_url.lower() or "async image/video api" in body
+
+
+def _generate_via_async_video_api(
+    *,
+    base: str,
+    api_key: str,
+    model: str,
+    prompt: str,
+    sketch_bytes: bytes,
+    poll_interval_seconds: float = 2.0,
+    max_polls: int = 90,
+) -> dict:
+    """Submit to async /v1/videos, then poll until a final image URL is ready."""
+    import base64
+    import json
+    import time
+    import urllib.request
+
+    image_data_url = "data:image/png;base64," + base64.b64encode(sketch_bytes).decode("ascii")
+    submit_req = urllib.request.Request(
+        f"{base}/v1/videos",
+        data=json.dumps(
+            {
+                "model": model,
+                "prompt": prompt,
+                "image_url": image_data_url,
+            }
+        ).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(submit_req, timeout=180) as resp:
+        task = json.loads(resp.read())
+
+    task_id = task.get("task_id") or task.get("id")
+    if not task_id:
+        raise RuntimeError(f"async video api returned no task id: {task}")
+
+    for _ in range(max_polls):
+        status_req = urllib.request.Request(
+            f"{base}/v1/videos/{task_id}",
+            headers={"Authorization": f"Bearer {api_key}"},
+            method="GET",
+        )
+        with urllib.request.urlopen(status_req, timeout=180) as resp:
+            payload = json.loads(resp.read())
+        status = str(payload.get("status", "")).lower()
+        if status == "completed":
+            if payload.get("image_url") or payload.get("result_url") or payload.get("url"):
+                payload.setdefault("data", [{"image_url": payload.get("image_url") or payload.get("result_url") or payload.get("url")}])
+                payload["_genclaw_endpoint"] = "async-video"
+                return payload
+            raise RuntimeError(f"async video api completed without image url: {payload}")
+        if status in {"failed", "error", "canceled", "cancelled"}:
+            raise RuntimeError(f"async video api task failed: {payload}")
+        time.sleep(poll_interval_seconds)
+
+    raise RuntimeError(f"async video api timed out waiting for task {task_id}")
 
 
 class UniAPIImageEditGenerator(ImageGenerator):

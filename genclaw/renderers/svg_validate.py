@@ -29,7 +29,7 @@ _ALLOWED_TAGS = {
     "svg", "g", "defs", "title", "desc", "style",
     "rect", "circle", "ellipse", "line", "polyline", "polygon", "path",
     "text", "tspan", "textpath",
-    "lineargradient", "radialgradient", "stop", "pattern", "clippath", "mask",
+    "lineargradient", "radialgradient", "solidcolor", "stop", "pattern", "clippath", "mask",
     "filter", "fegaussianblur", "feoffset", "feblend", "femerge", "femergenode",
     "fecolormatrix", "fecomposite", "feflood", "use", "symbol", "marker",
     # 更多纯渲染的 SVG filter primitive(无 script,安全)
@@ -60,7 +60,7 @@ _HREF_RE = re.compile(r'(?:xlink:href|href)\s*=\s*["\']([^"\']*)["\']', re.IGNOR
 _URL_RE = re.compile(r"url\(\s*['\"]?([^'\")]+)", re.IGNORECASE)
 _TAG_RE = re.compile(r"<\s*([a-zA-Z][\w:-]*)")
 
-
+_MAX_PATH_COUNT = 64
 class SVGValidationError(ValueError):
     """自由形式 SVG 源码没通过静态校验。"""
 
@@ -84,11 +84,18 @@ def validate_svg(source: str) -> str:
             raise SVGValidationError(f"forbidden content matched pattern: {pat!r}")
 
     # tag 白名单
+    path_count = 0
     for match in _TAG_RE.finditer(low):
         # 剥掉 namespace 前缀(允许形如 "sodipodi:something" 之类)
         tag = match.group(1).split(":")[-1]
         if tag not in _ALLOWED_TAGS:
             raise SVGValidationError(f"disallowed tag: <{tag}>")
+        if tag == "path":
+            path_count += 1
+    if path_count > _MAX_PATH_COUNT:
+        raise SVGValidationError(
+            f"too many <path> elements for sparse SVG sketch: {path_count} > {_MAX_PATH_COUNT}"
+        )
 
     # 引用必须留在文档内(无 http(s)/file/data 等网络拉取)
     for ref in _HREF_RE.findall(source) + _URL_RE.findall(source):

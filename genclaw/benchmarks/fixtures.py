@@ -65,4 +65,4 @@ MINI_SUITE: tuple[BenchCase, ...] = (
 def get_suite(name: str = "mini") -> tuple[BenchCase, ...]:
     if name == "mini":
         return MINI_SUITE
-    raise ValueError(f"未知 suite {name!r};目前只有 'mini'")
+    raise ValueError(f"unknown suite {name!r}; 目前只有 'mini'")

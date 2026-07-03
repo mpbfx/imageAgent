@@ -33,6 +33,7 @@ ENV_OPENAI_KEY = "OPENAI_API_KEY"  # OpenAI 兼容 provider 的 API key
 ENV_OPENAI_BASE_URL = "OPENAI_BASE_URL"  # OpenAI 兼容 provider 的自定义端点(如 https://api.uniapi.io/v1)
 ENV_UNIAPI_KEY = "UNIAPI_API_KEY"  # UniAPI 专用 key
 ENV_UNIAPI_BASE_URL = "UNIAPI_BASE_URL"  # UniAPI 专用 endpoint
+ENV_FORCE_NATIVE_GEMINI = "GENCLAW_FORCE_NATIVE_GEMINI"  # 强制图像生成走 Gemini 原生接口
 
 # 可选:用环境变量覆盖下面的默认模型名(不设则用默认)。
 ENV_AGENT_MODEL = "GENCLAW_AGENT_MODEL"  # 覆盖 agent/认知层模型
@@ -53,6 +54,13 @@ DEFAULT_GENERATOR_MODEL = "gemini-3.1-flash-image"  # ← 可改:给草图上色
 # ← 可改:调大更能容忍模型输出畸形 JSON,但每次重试都多花一次 LLM 调用(更慢更贵);
 #   总尝试 = 1 次初始 + 本值次修复;超过后写出结构化 error 而非抛裸异常。
 DEFAULT_MAX_PARSE_RETRIES = 2
+
+
+def _env_flag(value: str | None) -> bool:
+    """Parse common truthy env-var values."""
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 class ProviderNotConfiguredError(RuntimeError):
@@ -82,6 +90,7 @@ class ProviderConfig:
     anthropic_base_url: str | None = None  # Claude 自定义端点(走代理时用)
     google_api_key: str | None = None  # Gemini key(缺则调用图像生成时报错)
     google_base_url: str | None = None  # Gemini 自定义端点(走代理时用)
+    force_native_gemini: bool = False  # 忽略 GOOGLE_BASE_URL,强制走 Google 原生 Gemini 图像接口
     uniapi_api_key: str | None = None  # UniAPI key(用于 OpenAI 兼容调用)
     uniapi_base_url: str | None = None  # UniAPI 自定义端点
     agent_model: str = DEFAULT_AGENT_MODEL  # 认知层模型名(默认见上方常量)
@@ -100,6 +109,7 @@ class ProviderConfig:
             anthropic_base_url=e.get(ENV_ANTHROPIC_BASE_URL),
             google_api_key=e.get(ENV_GOOGLE_KEY),
             google_base_url=e.get(ENV_GOOGLE_BASE_URL),
+            force_native_gemini=_env_flag(e.get(ENV_FORCE_NATIVE_GEMINI)),
             uniapi_api_key=e.get(ENV_UNIAPI_KEY),
             uniapi_base_url=e.get(ENV_UNIAPI_BASE_URL),
             agent_model=e.get(ENV_AGENT_MODEL, DEFAULT_AGENT_MODEL),

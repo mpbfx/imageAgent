@@ -1,0 +1,76 @@
+@startuml
+title GenClaw 精简架构图
+
+left to right direction
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "Microsoft YaHei"
+skinparam defaultTextAlignment center
+skinparam componentStyle rectangle
+skinparam ArrowColor #475569
+skinparam component {
+  BorderColor #334155
+  BackgroundColor #F8FAFC
+}
+skinparam database {
+  BorderColor #92400E
+  BackgroundColor #FFF7ED
+}
+skinparam cloud {
+  BorderColor #1D4ED8
+  BackgroundColor #EFF6FF
+}
+
+actor "用户" as User
+
+component "CLI\n`genclaw run/render/review`" as CLI
+component "Pipeline + GraphNodes\n编排主流程" as Flow
+component "CanvasPlan\n中心结构化契约" as Plan
+component "Renderer\nSVG / HTML / Three.js / Python" as Renderer
+component "ImageGenerator\nsketch -> final" as Generator
+component "Reviewer\n规则检查 + 可选 VLM" as Reviewer
+
+cloud "外部能力\nLLM / Search / 图像模型" as Services
+
+database "运行产物\nrequest.json\nplan.json\ncanvas.*\nsketch.png\nfinal.png\nreview.json\ntrace.jsonl" as Artifacts
+
+User --> CLI : 输入 prompt
+CLI --> Flow : 启动流程
+
+Flow --> Services : 可选 search + LLM conceptualize
+Flow --> Plan : 生成 / 更新
+
+Plan --> Renderer : 作为画布契约
+Renderer --> Artifacts : canvas.* + sketch.png
+
+Renderer --> Generator : sketch.png
+Generator --> Services : 图像生成 / 编辑
+Generator --> Artifacts : final.png
+
+Plan --> Reviewer : 提供检查目标
+Generator --> Reviewer : 提供 final.png
+Reviewer --> Services : 可选 VLM 审查
+Reviewer --> Artifacts : review.json
+
+Flow --> Reviewer : review / revise loop
+Flow --> Artifacts : request.json + trace.jsonl
+
+note bottom of Plan
+  关键边界:
+  Agent 产出 CanvasPlan,
+  Renderer 和 Reviewer 都围绕它工作。
+end note
+
+note bottom of Flow
+  主链:
+  search -> conceptualize -> render -> generate -> review
+end note
+
+legend right
+  |= 形状 |= 含义 |
+  | component | 本地核心模块 |
+  | cloud | 外部模型或服务 |
+  | database | 落盘产物 |
+endlegend
+
+@enduml

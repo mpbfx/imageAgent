@@ -33,7 +33,7 @@ from genclaw.renderers.base import Renderer
 from genclaw.renderers.html import HTMLRenderer
 from genclaw.renderers.svg import SVGRenderer
 from genclaw.review.base import Reviewer
-from genclaw.schemas import CanvasBackend, CanvasPlan, CanvasSource, Intent, TaskType
+from genclaw.schemas import CanvasBackend, CanvasPlan, CanvasSource
 from genclaw.search import NullSearchProvider, SearchProvider
 from genclaw.tracing import TraceWriter
 
@@ -156,9 +156,8 @@ class GraphNodes:
     def conceptualize(self, state: GenClawState) -> GenClawState:
         """第一节点:把用户 prompt 变 :class:`CanvasPlan`,并把 plan artifact 落盘。
 
-        ``search_node`` 已在本节点之前跑过(论文 §3.1-3.2:先搜索补全认知空白
-        再画),所以这里把 ``state.knowledge`` 回传给 agent,让 LLM 写代码时
-        能看到检索到的事实,并在 plan 落盘前合进 ``plan.knowledge``。
+        Agent 一次性产出 task_type 与 needs_search;后续 search 节点直接
+        读取 plan 上的搜索开关,不再额外跑 intent LLM。
         """
         if self.on_progress:
             self.on_progress("conceptualize", "starting", None)
@@ -183,6 +182,7 @@ class GraphNodes:
         state.plan = plan
         # 用 agent 给的 task_type 反向校正 state.task_type(单一真值原则)
         state.task_type = plan.task_type
+        state.needs_search = plan.needs_search
         if state.artifacts is not None:
             state.artifacts.write_json(state.artifacts.plan_path, plan.model_dump(mode="json"))
         self._record(
@@ -199,78 +199,18 @@ class GraphNodes:
             )
         return state
 
-    def intent_node(self, state: GenClawState) -> GenClawState:
-        """论文 §3.2 意图理解:由 LLM(或 fixture)主动判断要不要搜索。
-
-        这是 *最前面* 的节点(在 search_node 之前):
-          - external 模式:agent 调 LLM,返回 {task_type, needs_search, reason}
-          - fixture 模式:agent 用关键词查表
-
-        把 task_type 同步到 state.task_type,让后续 search_node / conceptualize
-        用一致的任务族;把 needs_search 同步到 state.needs_search,作为
-        search_node 的唯一开关(替代原 should_search() 的正则启发式)。
-
-        失败处理:non-fatal——记 error,继续往下走(把 needs_search 设为 False,
-        等于「不知道,先不搜」),让 search 节点空跑,conceptualize 仍能写 plan。
-        """
-        if self.on_progress:
-            self.on_progress("intent", "starting", None)
-        try:
-            intent = self.agent.intent_classify(
-                state.prompt, requested_task_type=state.task_type
-            )
-        except Exception as exc:
-            # LLM 挂了也不能让整个 run 挂掉:落一条 error,保守不搜。
-            if self.on_progress:
-                self.on_progress("intent", "failed", {"error": str(exc)})
-            self._record(state, "intent", error=str(exc))
-            return self._fail(state, "intent", exc, fatal=False)
-
-        state.intent = intent
-        state.needs_search = intent.needs_search
-        # 单一真值:intent 判定的 task_type 覆盖 user 传入的(若 user 传了)
-        if state.task_type is None:
-            state.task_type = intent.task_type
-
-        if state.artifacts is not None:
-            state.artifacts.write_json(
-                state.artifacts.run_dir / "intent.json",
-                intent.model_dump(mode="json"),
-            )
-        self._record(
-            state,
-            "intent",
-            input_summary=f"task_type={intent.task_type.value} needs_search={intent.needs_search}",
-        )
-        if self.on_progress:
-            self.on_progress(
-                "intent",
-                "done",
-                {
-                    "task_type": intent.task_type.value,
-                    "needs_search": intent.needs_search,
-                    "reason": intent.reason,
-                },
-            )
-        return state
-
     def search_node(self, state: GenClawState) -> GenClawState:
         """用 search provider 补齐知识缺口(论文 §3.1-3.2)。
 
-        在 ``conceptualize`` *之前*运行:先把检索到的事实存进 ``state.knowledge``,
-        conceptualize 再带着这些事实写代码——这样搜索结果真正参与生成,而不是
-        画完才补一份用不上的知识。
-
-        Gated:由 *intent_node*(LLM 主动判断)决定是否需要知识接地,不再用
-        should_search() 的正则启发式——论文 §3.2 说「智能体会调用搜索工具
-        补全相关事实」,意思是 agent 自己判断,不是外部正则。
+        Gated:由 CanvasPlan.needs_search 决定是否需要知识接地,不再用
+        intent_node 或 search.should_search() 的正则启发式。
         NullSearchProvider 是「真但不取数」,所以这一步协议存在、行为 no-op,
         fixture / 离线环境都能跑。
         """
         if not state.needs_search:
             if self.on_progress:
                 self.on_progress("search", "skipped", None)
-            self._record(state, "search", input_summary="skipped (intent: no search needed)")
+            self._record(state, "search", input_summary="skipped (plan: no search needed)")
             return state
 
         if self.on_progress:
@@ -283,6 +223,15 @@ class GraphNodes:
             return self._fail(state, "search", exc, fatal=False)
 
         state.knowledge = list(state.knowledge) + refs
+        if state.plan is not None:
+            seen = {(k.source, k.claim) for k in state.plan.knowledge}
+            for ref in refs:
+                if (ref.source, ref.claim) not in seen:
+                    state.plan.knowledge.append(ref)
+            if state.artifacts is not None:
+                state.artifacts.write_json(
+                    state.artifacts.plan_path, state.plan.model_dump(mode="json")
+                )
         self._record(
             state,
             "search",

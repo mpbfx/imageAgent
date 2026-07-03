@@ -59,7 +59,7 @@ err_console = Console(stderr=True)
 @app.command()
 def run(
     prompt: str = typer.Option(..., "--prompt", "-p", help="自然语言请求。"),
-    mode: str = typer.Option("fixture", "--mode", help="fixture | external(code-as-brush,真实模型默认) | external-template(结构化) | external-code(别名)。"),
+    mode: str = typer.Option("fixture", "--mode", help="fixture | external(code-as-brush,真实模型默认) | external-tele(tele SSH 图生图,同样走code-as-brush) | external-template(结构化) | external-code(别名)。"),
     out: Path = typer.Option(Path("outputs/runs"), "--out", help="run 输出根目录。"),
     max_revisions: int = typer.Option(1, "--max-revisions", help="审查重试预算。"),
     use_langgraph: bool = typer.Option(False, "--langgraph", help="改用 LangGraph 驱动。"),
@@ -83,7 +83,7 @@ def run(
     # 安全提示:code-as-brush 会执行模型写的代码(HTML / Three.js 在
     # 无沙箱的头部 Chromium 里跑 JS;ADR 0005)。显式警告一下,让用户
     # 知道真实模型 run 在做什么。external-template 不会。
-    if mode in ("external", "external-code"):
+    if mode in ("external", "external-code", "external-tele"):
         err_console.print(
             "[yellow]⚠ code-as-brush:接下来会渲染模型写的代码。HTML / "
             "Three.js 会在无沙箱的头部 Chromium 里跑 JS(ADR 0005)。"
@@ -228,7 +228,8 @@ def bench(
 
     console.print(
         f"{suite}:{summary['passed']}/{summary['total']} 通过 "
-        f"({summary['pass_rate'] * 100:.0f}%)"
+        f"({summary['pass_rate'] * 100:.0f}%); "
+        f"{summary['passed']}/{summary['total']} passed"
     )
     if summary["failed"]:
         raise typer.Exit(code=1)

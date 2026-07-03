@@ -131,7 +131,8 @@ def run_benchmark(
         "cases": [r.to_dict() for r in results],
         "disclaimer": (
             "本地项目 fixture 回归 smoke,**不**和官方 GenEval++ / "
-            "LongText-Bench / ImgEdit / Mind-Bench 指标可比。"
+            "LongText-Bench / ImgEdit / Mind-Bench 指标可比。 "
+            "NOT comparable to official metrics."
         ),
     }
 
@@ -156,7 +157,7 @@ def _write_summary_md(out_dir: Path, summary: dict) -> Path:
         "",
         f"> {summary['disclaimer']}",
         "",
-        f"**通过率:** {summary['passed']}/{summary['total']} "
+        f"**通过率 / Pass rate:** {summary['passed']}/{summary['total']} "
         f"({summary['pass_rate'] * 100:.0f}%)",
         "",
         "| Case | Family | 结果 | 未通过的检查 |",

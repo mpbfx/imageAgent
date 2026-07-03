@@ -36,14 +36,19 @@
 from __future__ import annotations
 
 import base64
+import io
+import json
 import os
+import posixpath
 import subprocess
 import tempfile
+import textwrap
 from pathlib import Path
 from typing import Optional
 
 from genclaw.config import ProviderConfig, ProviderNotConfiguredError
 from genclaw.generators.base import GenerationResult, ImageGenerator
+from genclaw.generators.external import _instruction, _rerender_strength
 
 # 环境变量名常量——集中定义,避免「字符串魔法」散落各处。
 ENV_HOST = "GENCLAW_TELE_SSH_HOST"
@@ -54,36 +59,28 @@ ENV_MODEL_PATH = "GENCLAW_TELE_MODEL_PATH"
 ENV_PYTHON = "GENCLAW_TELE_PYTHON"
 ENV_GPU = "GENCLAW_TELE_GPU"
 ENV_STEPS = "GENCLAW_TELE_STEPS"
-
-# 一次性服务端 runner:从文件读 sketch base64,跑纯 img2img,写结果 PNG。
-# 这个脚本只放在 /tmp,不进项目树;在调用方用完就尝试 rm 掉。
-_RUNNER = r'''
-import sys, base64, io, traceback
-from PIL import Image
-import torch
-from diffusers import QwenImageEditPlusPipeline
-
-model_path = sys.argv[1]
-img_b64_path = sys.argv[2]
-prompt = sys.argv[3]
-out_path = sys.argv[4]
-steps = int(sys.argv[5]) if len(sys.argv) > 5 else 30
-cfg = float(sys.argv[6]) if len(sys.argv) > 6 else 4.0
-
-img = Image.open(io.BytesIO(base64.b64decode(open(img_b64_path).read().strip()))).convert("RGB")
-pipe = QwenImageEditPlusPipeline.from_pretrained(model_path, torch_dtype=torch.bfloat16).to("cuda:0")
-out = pipe(image=img, prompt=prompt, true_cfg_scale=cfg, num_inference_steps=steps,
-           num_images_per_prompt=1,
-           generator=torch.Generator(device="cuda:0").manual_seed(50))
-out.images[0].save(out_path)
-print("OK", out_path, flush=True)
-'''
-
-# 文字密集型任务:用更「温柔」的指令与 cfg,保住代码画出来的字形。
-# QwenImageEditPlusPipeline 没有 ``strength`` 参数,rerender 强度靠 prompt
-# 措辞 + true_cfg_scale 间接调(已实测验证)。强 rerender 会把平面的矢量
-# 草图变成写实场景,但会扰动细字形,所以按任务族缩放强度。
-_TEXT_TASKS = {"long_text"}
+ENV_WORKDIR = "GENCLAW_TELE_WORKDIR"
+ENV_SERVICE_PORT = "GENCLAW_TELE_SERVICE_PORT"
+DEFAULT_RENDER_STEPS = 28
+DEFAULT_RENDER_TRUE_CFG = 4.5
+DEFAULT_RENDER_GUIDANCE = 1.0
+RERENDER_PARAMS = {
+    "low": {
+        "num_inference_steps": 24,
+        "true_cfg_scale": 3.5,
+        "guidance_scale": 1.0,
+    },
+    "medium": {
+        "num_inference_steps": 32,
+        "true_cfg_scale": 5.0,
+        "guidance_scale": 1.1,
+    },
+    "high": {
+        "num_inference_steps": 52,
+        "true_cfg_scale": 7.5,
+        "guidance_scale": 1.8,
+    },
+}
 
 
 class TeleImg2ImgGenerator(ImageGenerator):
@@ -103,6 +100,8 @@ class TeleImg2ImgGenerator(ImageGenerator):
         self.python = e.get(ENV_PYTHON)
         self.gpu = e.get(ENV_GPU, "1")
         self.steps = e.get(ENV_STEPS, "30")
+        self.service_port = e.get(ENV_SERVICE_PORT, "18765")
+        self.workdir = e.get(ENV_WORKDIR) or self._infer_workdir(self.model_path)
 
     def _require(self) -> None:
         """检查必填环境变量;缺哪个就抛带引导信息的 ProviderNotConfiguredError。"""
@@ -164,11 +163,159 @@ class TeleImg2ImgGenerator(ImageGenerator):
         cmd = self._ssh_base() + [self.user, remote_cmd]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         if proc.returncode != 0:
+            stderr = proc.stderr.strip()
+            stdout = proc.stdout.strip()
+            details = []
+            if stdout:
+                details.append(f"stdout: {stdout[-1200:]}")
+            if stderr:
+                details.append(f"stderr: {stderr[-1200:]}")
+            detail_text = "; ".join(details) if details else "no stdout/stderr captured"
             raise RuntimeError(
                 f"remote command failed (rc={proc.returncode}): "
-                f"{proc.stderr.strip()[-400:]}"
+                f"cmd={remote_cmd!r}; {detail_text}"
             )
         return proc.stdout
+
+    def _service_script(self) -> str:
+        """常驻远端服务：直接复刻 API 路径的 QwenImageEditPlusPipeline 调用。"""
+        script = textwrap.dedent(
+            """
+            import base64
+            import io
+            import json
+            import sys
+            from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+            from PIL import Image
+            import torch
+            from diffusers import QwenImageEditPlusPipeline
+
+            pipe = QwenImageEditPlusPipeline.from_pretrained(
+                "__MODEL_PATH__", torch_dtype=torch.bfloat16
+            ).to("cuda:0")
+
+            class Handler(BaseHTTPRequestHandler):
+                def do_POST(self):
+                    if self.path != "/generate":
+                        self.send_error(404)
+                        return
+                    length = int(self.headers.get("Content-Length", "0"))
+                    payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                    image = Image.open(
+                        io.BytesIO(base64.b64decode(payload["image"]))
+                    ).convert("RGB")
+                    prompt = payload["prompt"]
+                    generator = torch.Generator(device="cuda:0").manual_seed(
+                        int(payload.get("seed", 50))
+                    )
+                    result = pipe(
+                        image,
+                        prompt,
+                        num_inference_steps=payload.get(
+                            "num_inference_steps",
+                            __DEFAULT_STEPS__,
+                        ),
+                        true_cfg_scale=payload.get(
+                            "true_cfg_scale",
+                            __DEFAULT_TRUE_CFG__,
+                        ),
+                        guidance_scale=payload.get(
+                            "guidance_scale",
+                            __DEFAULT_GUIDANCE__,
+                        ),
+                        num_images_per_prompt=1,
+                        generator=generator,
+                    )
+                    out = io.BytesIO()
+                    result.images[0].save(out, format="PNG")
+                    output_b64 = base64.b64encode(out.getvalue()).decode("utf-8")
+                    body = json.dumps({"image": output_b64}).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+                def log_message(self, fmt, *args):
+                    return
+
+            server = ThreadingHTTPServer(("127.0.0.1", __PORT__), Handler)
+            server.serve_forever()
+            """
+        )
+        script = script.replace("__PORT__", self.service_port)
+        script = script.replace("__MODEL_PATH__", self.model_path or "")
+        script = script.replace("__DEFAULT_STEPS__", str(DEFAULT_RENDER_STEPS))
+        script = script.replace("__DEFAULT_TRUE_CFG__", str(DEFAULT_RENDER_TRUE_CFG))
+        script = script.replace("__DEFAULT_GUIDANCE__", str(DEFAULT_RENDER_GUIDANCE))
+        return script
+
+    def _service_client_command(self, payload_path: str, output_json_path: str) -> str:
+        return (
+            f"{self.python} - '{payload_path}' '{output_json_path}' <<'PY'\n"
+            "import json\n"
+            "import sys\n"
+            "import urllib.request\n"
+            "payload_path = sys.argv[1]\n"
+            "output_path = sys.argv[2]\n"
+            "body = open(payload_path, 'rb').read()\n"
+            "req = urllib.request.Request(\n"
+            f"    'http://127.0.0.1:{self.service_port}/generate',\n"
+            "    data=body,\n"
+            "    headers={'Content-Type': 'application/json'},\n"
+            "    method='POST',\n"
+            ")\n"
+            "with urllib.request.urlopen(req, timeout=600) as resp:\n"
+            "    data = resp.read()\n"
+            "open(output_path, 'wb').write(data)\n"
+            "print('OK', output_path, flush=True)\n"
+            "PY"
+        )
+
+    def _ensure_service(self) -> None:
+        if not self.workdir:
+            raise RuntimeError("tele service workdir is unknown; set GENCLAW_TELE_WORKDIR")
+        service_path = "/tmp/genclaw_tele_service.py"
+        launch_cmd = (
+            f"cd {self.workdir}\n"
+            f"if ! python - <<'PY'\n"
+            "import socket, sys\n"
+            f"s = socket.socket(); rc = s.connect_ex(('127.0.0.1', {self.service_port})); s.close(); sys.exit(0 if rc == 0 else 1)\n"
+            "PY\n"
+            "then\n"
+            f"cat > {service_path} <<'PY'\n{self._service_script()}PY\n"
+            f"nohup env CUDA_VISIBLE_DEVICES={self.gpu} PYTORCH_ALLOC_CONF=expandable_segments:True "
+            f"{self.python} {service_path} >/tmp/genclaw_tele_service.log 2>&1 &\n"
+            "fi\n"
+            "for i in $(seq 1 300); do\n"
+            "python - <<'PY'\n"
+            "import socket, sys\n"
+            f"s = socket.socket(); rc = s.connect_ex(('127.0.0.1', {self.service_port})); s.close(); sys.exit(0 if rc == 0 else 1)\n"
+            "PY\n"
+            "if [ $? -eq 0 ]; then\n"
+            "  exit 0\n"
+            "fi\n"
+            "sleep 2\n"
+            "done\n"
+            "echo 'tele service did not become ready in time' >&2\n"
+            "exit 1"
+        )
+        self._ssh_run(launch_cmd, timeout=900)
+
+    @staticmethod
+    def _infer_workdir(model_path: Optional[str]) -> Optional[str]:
+        """从远端模型路径推导 tele 项目的 codes 目录。"""
+        if not model_path:
+            return None
+        cleaned = model_path.rstrip("/")
+        suffix = "/models/base_model"
+        if cleaned.endswith(suffix):
+            return cleaned[: -len(suffix)] + "/codes"
+        model_dir = posixpath.dirname(cleaned)
+        if posixpath.basename(model_dir) == "models":
+            return posixpath.join(posixpath.dirname(model_dir), "codes")
+        return None
 
     def generate(
         self,
@@ -185,36 +332,55 @@ class TeleImg2ImgGenerator(ImageGenerator):
         # 用 output_path 的 stem 当 tag,让多 run 并发时不撞 /tmp 文件名。
         tag = output_path.stem
         r_img = f"/tmp/gc_{tag}_img.b64"
-        r_runner = f"/tmp/gc_{tag}_runner.py"
+        r_payload = f"/tmp/gc_{tag}_payload.json"
+        r_result = f"/tmp/gc_{tag}_result.json"
         r_out = f"/tmp/gc_{tag}_out.png"
-        target = f"{self.user.split(' ')[-1]}" if False else self.user
 
         with tempfile.TemporaryDirectory() as td:
             tdp = Path(td)
-            # 1) 把 sketch 编码成 base64 文件
-            b64 = base64.b64encode(sketch_path.read_bytes()).decode()
-            (tdp / "img.b64").write_text(b64)
-            (tdp / "runner.py").write_text(_RUNNER)
-            # 2) 把 sketch + runner 传到服务器 /tmp
-            self._scp(str(tdp / "img.b64"), f"{self.user}:{r_img}")
-            self._scp(str(tdp / "runner.py"), f"{self.user}:{r_runner}")
-            # 3) 在空闲 GPU 上跑 img2img。按 task family 选 rerender 强度:
-            #    文字密集 -> 温柔(保住字形);其它 -> 强写实。
-            task = (constraints or {}).get("task_type", "")
-            instr, cfg, steps = _instruction_for(prompt, task, constraints)
-            shell_prompt = instr.replace("'", "'\\''")
+            # 1) 按重绘强度把 sketch 编码成条件图。
+            rerender_strength = _rerender_strength(prompt, constraints)
+            params = RERENDER_PARAMS[rerender_strength]
+            b64 = base64.b64encode(
+                _sketch_bytes_for_rerender(sketch_path, rerender_strength)
+            ).decode()
+            payload = {
+                "image": b64,
+                "prompt": _instruction(prompt, constraints),
+                "rerender_strength": rerender_strength,
+                "num_inference_steps": params["num_inference_steps"],
+                "true_cfg_scale": params["true_cfg_scale"],
+                "guidance_scale": params["guidance_scale"],
+                "seed": 50,
+            }
+            (tdp / "payload.json").write_text(
+                json.dumps(payload, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            self._scp(str(tdp / "payload.json"), f"{self.user}:{r_payload}")
+            self._ensure_service()
             remote = (
-                f"CUDA_VISIBLE_DEVICES={self.gpu} "
-                f"PYTORCH_ALLOC_CONF=expandable_segments:True "
-                f"{self.python} {r_runner} '{self.model_path}' {r_img} "
-                f"'{shell_prompt}' {r_out} {steps} {cfg}"
+                f"cd {self.workdir} && "
+                + self._service_client_command(r_payload, r_result)
+                + f"\n{self.python} - '{r_result}' '{r_out}' <<'PY'\n"
+                "import base64\n"
+                "import io\n"
+                "import json\n"
+                "import sys\n"
+                "from PIL import Image\n"
+                "result_path = sys.argv[1]\n"
+                "out_path = sys.argv[2]\n"
+                "payload = json.load(open(result_path, encoding='utf-8'))\n"
+                "img = Image.open(io.BytesIO(base64.b64decode(payload['image']))).convert('RGB')\n"
+                "img.save(out_path)\n"
+                "print('OK', out_path, flush=True)\n"
+                "PY"
             )
             self._ssh_run(remote, timeout=600)
-            # 4) 把结果 PNG 拷回本地
             self._scp(f"{self.user}:{r_out}", str(output_path))
             # best-effort:服务端 /tmp 临时文件清掉(失败不影响主流程)
             try:
-                self._ssh_run(f"rm -f {r_img} {r_runner} {r_out}", timeout=30)
+                self._ssh_run(f"rm -f {r_payload} {r_result} {r_out} {r_img}", timeout=30)
             except Exception:
                 pass
 
@@ -223,42 +389,43 @@ class TeleImg2ImgGenerator(ImageGenerator):
             provider=self.name,
             sketch_path=sketch_path,
             metadata={
-                "model": "QwenImageEditPlusPipeline (self-hosted)",
-                "mode": "pure-img2img",
+                "model": "QwenImageEditPlusPipeline (self-hosted service)",
+                "mode": "remote-service-api-equivalent",
                 "host": self.host,
-                "task_type": task,
-                "cfg": cfg,
-                "steps": steps,
+                "service_port": self.service_port,
+                "rerender_strength": rerender_strength,
+                "num_inference_steps": params["num_inference_steps"],
+                "true_cfg_scale": params["true_cfg_scale"],
+                "guidance_scale": params["guidance_scale"],
                 "prompt": prompt,
             },
         )
 
 
-def _instruction_for(prompt: str, task: str, constraints: dict | None) -> tuple[str, float, int]:
-    """根据任务族构造 ``(instruction, cfg, steps)``。
+def _sketch_bytes_for_rerender(sketch_path: Path, strength: str) -> bytes:
+    """Return the image bytes sent to the edit model.
 
-    文字密集任务给「保住字形」的温柔指令;材质/场景任务给「把平面矢量变
-    写实照片」的强指令(更高 cfg + 更高 steps),经验证可以有效把
-    「卡通感」压下去,又保留构图。
+    High redraw should not feed a crisp completed SVG screenshot back to an edit
+    model, because the model will preserve it. Instead, send a softened color
+    guide: colors still carry semantic constraints, while blur/noise/low contrast
+    remove finished vector styling.
     """
-    if task in _TEXT_TASKS:
-        instr = (
-            "Add realistic paper texture, subtle lighting, and material depth to this "
-            "design. Keep ALL text characters, numbers, and layout EXACTLY as drawn; "
-            "do not redraw, move, or regenerate any text. Result: " + prompt
-        )
-        cfg, steps = 4.0, 30
+    raw = Path(sketch_path).read_bytes()
+    if strength == "low":
+        return raw
+
+    from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+
+    img = Image.open(io.BytesIO(raw)).convert("RGB")
+    if strength == "medium":
+        img = ImageEnhance.Color(img).enhance(0.25)
+        img = ImageEnhance.Contrast(img).enhance(0.85)
     else:
-        instr = (
-            "Transform this flat vector illustration into a fully photorealistic "
-            "photograph. Render real materials, surfaces, lighting, reflections, and "
-            "natural detail so nothing looks like a drawing. Keep the same composition, "
-            "object counts, positions, and layout as drawn. Scene: " + prompt
-        )
-        cfg, steps = 7.0, 40
-    if constraints:
-        # task_type 已经用来切档,不要重复塞进 prompt
-        extra = {k: v for k, v in constraints.items() if k != "task_type"}
-        if extra:
-            instr += f"\nConstraints: {extra}"
-    return instr, cfg, steps
+        img = img.filter(ImageFilter.GaussianBlur(radius=4))
+        img = ImageEnhance.Sharpness(img).enhance(0.0)
+        img = ImageEnhance.Contrast(img).enhance(0.55)
+        img = ImageEnhance.Color(img).enhance(0.8)
+
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()

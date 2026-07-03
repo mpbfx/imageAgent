@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Optional
 
 from pydantic import ValidationError
@@ -44,45 +45,10 @@ from genclaw.agent.prompts import (
     SYSTEM_PROMPT,
 )
 from genclaw.config import ProviderConfig
-from genclaw.schemas import CanvasPlan, Intent, TaskType
+from genclaw.schemas import CanvasPlan, TaskType
 
 GLM_AGENT_MAX_TOKENS = 8192
-
-
-def _should_knowledge_ground(prompt: str) -> bool:
-    """启发式判断 prompt 是否涉及知识密集型任务（需要搜索补齐）。
-
-    检测特征：
-    - 时间敏感（年份、"最新"、"最近"、"今年"等）
-    - 具体实体（地名、人名、品牌、电影等）
-    - 文化符号（节日、传统、习俗）
-    - 新闻/事件性（发生、举办、比赛等）
-
-    这个启发式会在 Phase 2 被替换为更复杂的意图识别。
-    """
-    keywords = [
-        # 时间敏感
-        "2026", "2025", "2024", "最新", "最近", "今年", "去年", "明年",
-        "当前", "最新", "实时", "新闻",
-        # 地理/地点
-        "城市", "街景", "地点", "国家", "地区", "场景", "街道",
-        # 文化/事件
-        "节日", "传统", "风俗", "习俗", "文化", "活动", "比赛", "竞赛",
-        "世界杯", "奥运", "展览", "庆典",
-        # 具体实体（需要外部知识）
-        "品牌", "餐厅", "电影", "人物", "名人", "历史人物",
-        # 专业领域
-        "科学", "数学", "物理", "化学", "医学", "法律",
-        # 食物/菜品（需要准确信息）
-        "菜单", "菜品", "食谱", "料理",
-    ]
-
-    prompt_lower = prompt.lower()
-    # 只要匹配到任何关键词，就认为需要知识补齐
-    for kw in keywords:
-        if kw in prompt_lower:
-            return True
-    return False
+logger = logging.getLogger(__name__)
 
 
 class PlanParseError(RuntimeError):
@@ -164,97 +130,8 @@ class ExternalLLMAgent(AgentProvider):
         # code_mode=True 时让 LLM 直接写 SVG 源码（ADR 0005, code-as-brush），
         # 而不是返回结构化字段再让模板编译——画笔本身就是代码。
         self.code_mode = code_mode
-
-    # --- 公开契约 ---------------------------------------------------------------
-
-    def intent_classify(
-        self,
-        prompt: str,
-        requested_task_type: Optional[TaskType] = None,
-    ) -> Intent:
-        """论文 §3.2 意图理解的 LLM 实现:让 agent 自己判断要不要搜。
-
-        走一次轻量 LLM 调用,system/user prompt 内联在本方法里(短,
-        只问 4 选 1 + bool,延迟与 token 都低)。失败时退到原来的
-        关键词启发式,不挂整条 pipeline。
-        """
-        system = (
-            "You are the intent classifier for GenClaw. Reply with ONLY a JSON object, "
-            "no prose, no markdown fence.\n\n"
-            "Schema:\n"
-            '{"task_type": "composition" | "long_text" | "physical_reasoning" '
-            '| "editing" | "knowledge_grounded",\n'
-            ' "needs_search": true | false,\n'
-            ' "reason": "<one-sentence justification>"}\n\n'
-            "Decision rules:\n"
-            '- knowledge_grounded + needs_search=true when the prompt names a specific '
-            'real-world entity whose accurate depiction depends on facts the model '
-            'cannot reliably recall (named person, brand, product model, landmark, '
-            'flag, sports team, real event with precise date/score, long-tail '
-            'cultural object, current events).\n'
-            "- long_text: poster / card / menu / document / infographic (text-driven). "
-            "Usually needs_search=false.\n"
-            "- physical_reasoning: geometry / physics / optics / mirror / 3D viewpoint. "
-            "needs_search=false.\n"
-            "- composition: object counting / spatial relations / abstract arrangement. "
-            "needs_search=false.\n"
-            "- editing: modify / recolor / resize / remove part of an input image. "
-            "needs_search=false (the input image is the source of truth).\n\n"
-            "Default: needs_search=false. Only flip it to true when confident the "
-            "prompt references facts that benefit from a fresh web lookup."
-        )
-        user = (
-            f"requested_task_type: "
-            f"{requested_task_type.value if requested_task_type else 'infer'}\n"
-            f"user_prompt: {prompt}\n\n"
-            "Return ONLY the JSON object, no extra text."
-        )
-        try:
-            raw = self._complete(system, user)
-        except Exception as exc:
-            return self._intent_fallback(prompt, requested_task_type, reason=f"llm_error: {exc}")
-
-        try:
-            data = json.loads(_extract_json(raw))
-        except json.JSONDecodeError as exc:
-            return self._intent_fallback(
-                prompt, requested_task_type, reason=f"json_parse_error: {exc}"
-            )
-
-        if "task_type" not in data and requested_task_type is not None:
-            data["task_type"] = requested_task_type.value
-        data.setdefault("needs_search", False)
-        data.setdefault("reason", "")
-
-        try:
-            return Intent.model_validate(data)
-        except ValidationError as exc:
-            return self._intent_fallback(
-                prompt, requested_task_type, reason=f"validate_error: {exc}"
-            )
-
-    def _intent_fallback(
-        self,
-        prompt: str,
-        requested_task_type: Optional[TaskType],
-        *,
-        reason: str,
-    ) -> Intent:
-        """LLM 挂了时的降级:沿用原来 external agent 的关键词启发式。
-
-        旧版的 _should_knowledge_ground() 现在降级为 fallback,主路径是
-        LLM intent_classify——这样 LLM 不可用时整条 pipeline 仍能跑通。
-        """
-        needs_search = _should_knowledge_ground(prompt)
-        task_type = (
-            requested_task_type
-            or (TaskType.knowledge_grounded if needs_search else TaskType.composition)
-        )
-        return Intent(
-            task_type=task_type,
-            needs_search=needs_search,
-            reason=f"fallback: {reason}",
-        )
+        self._openai_client = None
+        self._anthropic_client = None
 
     def conceptualize(
         self,
@@ -287,11 +164,13 @@ class ExternalLLMAgent(AgentProvider):
             if attempt == 0:
                 raw = self._complete(system, user)
             else:
-                # 把上一次的原始输出 + 校验错误一起回喂给模型,让它在
-                # 同一会话上下文里自我修正——大多数 Pydantic 错误（缺字段、
-                # 类型不对、枚举值不合法）都能被模型一次修正。
                 repair = REPAIR_PROMPT.format(errors=last_error, previous=attempts[-1])
-                raw = self._complete(system, user + "\n\n" + repair)
+                history = [
+                    {"role": "user", "content": user},
+                    {"role": "assistant", "content": attempts[-1]},
+                    {"role": "user", "content": repair},
+                ]
+                raw = self._complete(system, repair, history=history)
             attempts.append(raw)
 
             try:
@@ -306,11 +185,7 @@ class ExternalLLMAgent(AgentProvider):
             data.setdefault("prompt", prompt)
             if task_type is not None:
                 data["task_type"] = task_type.value
-            else:
-                # 如果没有显式指定 task_type，用启发式判断是否需要知识补齐。
-                # 这是对论文「智能体主动判断是否搜索」的简化实现（Phase 1）。
-                if _should_knowledge_ground(prompt):
-                    data.setdefault("task_type", TaskType.knowledge_grounded.value)
+            data.setdefault("needs_search", False)
 
             try:
                 return CanvasPlan.model_validate(data)
@@ -320,10 +195,14 @@ class ExternalLLMAgent(AgentProvider):
                 continue
 
         raise PlanParseError(attempts, last_error)
-
     # --- provider boundary -----------------------------------------------------
 
-    def _complete(self, system: str, user: str) -> str:
+    def _complete(
+        self,
+        system: str,
+        user: str,
+        history: Optional[list[dict[str, str]]] = None,
+    ) -> str:
         """调用 LLM 后端并返回原始文本。
 
         同时支持 Anthropic（Claude）和 OpenAI 兼容 provider（UniAPI 等）。
@@ -332,12 +211,12 @@ class ExternalLLMAgent(AgentProvider):
         """
         # 优先走 UniAPI (OpenAI 兼容),适合国内/自建代理场景。
         if self.config.uniapi_api_key:
-            return self._complete_openai_compatible(system, user)
+            return self._complete_openai_compatible(system, user, history=history)
 
         # 退到 Anthropic Claude。
-        return self._complete_anthropic(system, user)
+        return self._complete_anthropic(system, user, history=history)
 
-    def _complete_openai_compatible(self, system: str, user: str) -> str:
+    def _openai_compatible_client(self):
         """调用 OpenAI 兼容 provider(UniAPI、LM Studio、vLLM 等)。"""
         try:
             from openai import OpenAI
@@ -347,14 +226,25 @@ class ExternalLLMAgent(AgentProvider):
                 'install the providers extra: pip install -e ".[providers]"'
             ) from exc
 
-        kwargs = self.config.uniapi_kwargs("openai-compatible-agent")
-        client = OpenAI(**kwargs)
+        if self._openai_client is None:
+            kwargs = self.config.uniapi_kwargs("openai-compatible-agent")
+            self._openai_client = OpenAI(**kwargs)
+        return self._openai_client
+
+    def _complete_openai_compatible(
+        self,
+        system: str,
+        user: str,
+        history: Optional[list[dict[str, str]]] = None,
+    ) -> str:
+        """调用 OpenAI 兼容 provider(UniAPI、LM Studio、vLLM 等)。"""
+        client = self._openai_compatible_client()
 
         # 检查是否是 UniAPI（通过 base_url 判断）
         is_uniapi = "uniapi" in str(self.config.uniapi_base_url).lower()
         is_glm = self.config.agent_model.lower().startswith("glm-")
 
-        if is_uniapi and not is_glm:
+        if is_uniapi and not is_glm and history is None and hasattr(client, "responses"):
             # UniAPI 使用独特的 responses.create() 接口
             try:
                 combined_prompt = f"{system}\n\n{user}"
@@ -363,9 +253,9 @@ class ExternalLLMAgent(AgentProvider):
                     input=combined_prompt,
                 )
                 return response.output_text or ""
-            except AttributeError:
+            except AttributeError as exc:
                 # 回退到标准 chat.completions 接口
-                pass
+                logger.warning("responses.create unavailable; falling back to chat.completions: %s", exc)
 
         # 标准 OpenAI 兼容接口
         max_tokens = GLM_AGENT_MAX_TOKENS if is_glm else 4096
@@ -377,10 +267,8 @@ class ExternalLLMAgent(AgentProvider):
         request_kwargs = {
             "model": self.config.agent_model,
             "max_tokens": max_tokens,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+            "messages": [{"role": "system", "content": system}]
+            + (history or [{"role": "user", "content": user}]),
         }
         if extra_body is not None:
             request_kwargs["extra_body"] = extra_body
@@ -389,13 +277,13 @@ class ExternalLLMAgent(AgentProvider):
                 **request_kwargs,
                 response_format={"type": "json_object"},
             )
-        except (TypeError, Exception):
+        except TypeError:
             # 如果 response_format 不支持，直接调用而不使用它
             message = client.chat.completions.create(**request_kwargs)
 
         return message.choices[0].message.content or ""
 
-    def _complete_anthropic(self, system: str, user: str) -> str:
+    def _anthropic_client_instance(self):
         """调用 Anthropic Claude 后端。"""
         try:
             import anthropic
@@ -405,12 +293,25 @@ class ExternalLLMAgent(AgentProvider):
                 'install the providers extra: pip install -e ".[providers]"'
             ) from exc
 
-        client = anthropic.Anthropic(**self.config.anthropic_kwargs("anthropic-claude-agent"))
+        if self._anthropic_client is None:
+            self._anthropic_client = anthropic.Anthropic(
+                **self.config.anthropic_kwargs("anthropic-claude-agent")
+            )
+        return self._anthropic_client
+
+    def _complete_anthropic(
+        self,
+        system: str,
+        user: str,
+        history: Optional[list[dict[str, str]]] = None,
+    ) -> str:
+        """调用 Anthropic Claude 后端。"""
+        client = self._anthropic_client_instance()
         message = client.messages.create(
             model=self.config.agent_model,
             max_tokens=4096,
             system=system,
-            messages=[{"role": "user", "content": user}],
+            messages=history or [{"role": "user", "content": user}],
         )
         # Claude 返回的是 content 块列表(text / tool_use / image),这里只
         # 拼接 text 块,其它忽略——能跑通结构化 JSON 输出的对话。

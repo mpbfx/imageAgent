@@ -14,7 +14,7 @@ def pipeline(tmp_path):
 
 
 def test_composition_run_creates_all_artifacts(pipeline):
-    state = pipeline.run("three red circles on the left")
+    state = pipeline.run("three red circles on the left", skip_review=False)
     arts = state.artifacts
 
     assert state.plan is not None
@@ -28,14 +28,14 @@ def test_composition_run_creates_all_artifacts(pipeline):
 
 
 def test_review_result_serialized_to_json(pipeline):
-    state = pipeline.run("three red circles on the left")
+    state = pipeline.run("three red circles on the left", skip_review=False)
     data = json.loads(state.artifacts.review_path.read_text(encoding="utf-8"))
     assert data["passed"] is True
     assert "score" in data
 
 
 def test_trace_contains_node_names(pipeline):
-    state = pipeline.run("three red circles on the left")
+    state = pipeline.run("three red circles on the left", skip_review=False)
     lines = state.artifacts.trace_path.read_text(encoding="utf-8").splitlines()
     stages = {json.loads(line)["stage"] for line in lines}
     assert {"conceptualize", "render", "generate", "review"} <= stages
@@ -68,7 +68,7 @@ def test_failed_review_loops_to_revise_until_budget(pipeline):
             return ReviewResult(passed=False, score=0.0, failures=["forced"])
 
     pipeline.reviewer = FailingReviewer()
-    state = pipeline.run("three red circles on the left", max_revisions=2)
+    state = pipeline.run("three red circles on the left", max_revisions=2, skip_review=False)
 
     assert state.review_result.passed is False
     assert state.revision_count == 2  # looped until the budget, then stopped.

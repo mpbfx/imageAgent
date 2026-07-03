@@ -12,7 +12,15 @@ runner = CliRunner()
 
 def test_run_fixture_exits_zero_and_prints_run_dir(tmp_path):
     result = runner.invoke(
-        app, ["run", "--prompt", "three red circles on the left", "--out", str(tmp_path)]
+        app,
+        [
+            "run",
+            "--prompt",
+            "three red circles on the left",
+            "--out",
+            str(tmp_path),
+            "--enable-review",
+        ],
     )
     assert result.exit_code == 0, result.output
     # The printed run dir exists and holds the artifacts.
@@ -40,6 +48,10 @@ def test_run_external_without_credentials_reports_error(tmp_path, monkeypatch):
     # No API keys -> the run should exit with code 1 or 2 and report an error.
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("UNIAPI_API_KEY", raising=False)
+    monkeypatch.delenv("UNIAPI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     result = runner.invoke(
         app,
         ["run", "--prompt", "two blue squares", "--mode", "external", "--out", str(tmp_path)],

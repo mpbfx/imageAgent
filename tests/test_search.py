@@ -9,7 +9,6 @@ from genclaw.schemas import (
     CanvasBackend,
     CanvasPlan,
     CanvasSize,
-    Intent,
     KnowledgeRef,
     TaskType,
 )
@@ -21,24 +20,14 @@ def _kg_plan(request_id="kg-1"):
         request_id=request_id,
         prompt="poster of the 2026 World Cup host cities",
         task_type=TaskType.knowledge_grounded,
+        needs_search=True,
         backend=CanvasBackend.html,
         size=CanvasSize(width=400, height=600),
     )
 
 
 class StubAgent:
-    """Returns a fixed knowledge-grounded plan regardless of prompt.
-
-    模拟「LLM 主动判定需要搜」的场景:intent_classify 强制 knowledge_grounded
-    + needs_search=True,以便测试 search_node 真的被触发。
-    """
-
-    def intent_classify(self, prompt, requested_task_type=None):
-        return Intent(
-            task_type=TaskType.knowledge_grounded,
-            needs_search=True,
-            reason="stub: 强制知识接地",
-        )
+    """Returns a fixed knowledge-grounded plan regardless of prompt."""
 
     def conceptualize(self, prompt, task_type=None, request_id=None, knowledge=None):
         return _kg_plan(request_id or "kg-1")
@@ -79,6 +68,8 @@ def test_search_node_merges_knowledge_into_plan(tmp_path):
 
     # The search provider was invoked and its facts landed in the plan.
     assert search.queries
+    assert state.needs_search is True
+    assert state.plan.needs_search is True
     assert len(state.plan.knowledge) == 1
     assert state.plan.knowledge[0].source == "https://example.com"
     # And the persisted plan artifact reflects the merged knowledge.
@@ -94,6 +85,8 @@ def test_search_node_traces_skip_for_non_knowledge(tmp_path):
     search_events = [json.loads(e) for e in events if json.loads(e)["stage"] == "search"]
     assert search_events
     assert "skipped" in search_events[0]["input_summary"]
+    assert state.needs_search is False
+    assert state.plan.needs_search is False
     assert state.plan.knowledge == []
 
 

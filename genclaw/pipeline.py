@@ -84,9 +84,13 @@ def build_providers(mode: str, search_provider: Optional[str] = None):
         cfg = ProviderConfig.from_env()
         if mode == "external-tele":
             generator = TeleImg2ImgGenerator()
+        elif cfg.force_native_gemini and cfg.generator_model.lower().startswith("gemini"):
+            generator = GeminiImageGenerator()
+        elif cfg.google_base_url and cfg.generator_model.lower().startswith("gemini"):
+            generator = OpenAICompatImageGenerator()
         elif cfg.uniapi_api_key:
             generator = UniAPIImageEditGenerator()
-        elif cfg.google_base_url or cfg.uniapi_api_key:
+        elif cfg.google_base_url:
             generator = OpenAICompatImageGenerator()
         else:
             generator = GeminiImageGenerator()
@@ -231,13 +235,10 @@ class Pipeline:
 
     def _run_direct(self, nodes: GraphNodes, state: GenClawState, skip_review: bool = False) -> GenClawState:
         """直接按顺序执行节点,镜像 LangGraph 的边和路由。"""
-        # intent 前置:论文 §3.2 智能体先做意图理解(LLM 判定 task_type +
-        # needs_search),再决定要不要搜——替代原 search 节点的正则启发式。
-        state = nodes.intent_node(state)
-        state = nodes.search_node(state)
         state = nodes.conceptualize(state)
         if state.plan is None:  # conceptualize 失败;停,error 已写。
             return state
+        state = nodes.search_node(state)
 
         revision = 0
         while True:

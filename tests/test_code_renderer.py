@@ -65,7 +65,7 @@ def test_external_image_tag_rejected():
         validate_svg('<svg><image href="https://x/y.png" width="10" height="10"/></svg>')
 
 
-def test_in_document_ref_allowed():
+def test_in_document_ref_with_gradient_is_allowed():
     svg = ('<svg xmlns="http://www.w3.org/2000/svg"><defs>'
            '<linearGradient id="g"><stop offset="0" stop-color="#fff"/></linearGradient>'
            '</defs><rect fill="url(#g)" width="10" height="10"/></svg>')
@@ -80,6 +80,44 @@ def test_disallowed_tag_rejected():
 def test_entity_doctype_rejected():
     with pytest.raises(SVGValidationError, match="forbidden"):
         validate_svg('<!DOCTYPE svg [<!ENTITY x "y">]><svg/>')
+
+
+def test_excessive_path_count_rejected():
+    many_paths = "".join(
+        f'<path d="M{i} 0 L{i} 10" stroke="#000" fill="none"/>'
+        for i in range(80)
+    )
+    with pytest.raises(SVGValidationError, match="too many <path>"):
+        validate_svg(f'<svg xmlns="http://www.w3.org/2000/svg">{many_paths}</svg>')
+
+
+def test_safe_filter_allowed_when_gradient_is_present():
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg"><defs>'
+        '<linearGradient id="g"><stop offset="0" stop-color="#fff"/></linearGradient>'
+        '<filter id="f"><feGaussianBlur stdDeviation="2"/></filter>'
+        '</defs><rect width="10" height="10" fill="url(#g)" filter="url(#f)"/></svg>'
+    )
+    assert validate_svg(svg) == svg
+
+
+def test_radial_gradient_allowed_for_code_svg():
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg"><defs>'
+        '<radialGradient id="rg"><stop offset="0" stop-color="#fff"/>'
+        '<stop offset="1" stop-color="#f00"/></radialGradient>'
+        '</defs><circle cx="50" cy="50" r="40" fill="url(#rg)"/></svg>'
+    )
+    assert validate_svg(svg) == svg
+
+
+def test_solid_color_allowed_for_code_svg():
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg"><defs>'
+        '<solidColor id="sc" solid-color="#f00" solid-opacity="1"/>'
+        '</defs><rect width="100" height="100" fill="url(#sc)"/></svg>'
+    )
+    assert validate_svg(svg) == svg
 
 
 # --- CodeRenderer -------------------------------------------------------------

@@ -11,7 +11,7 @@ TS = "20260618-120000"
 def test_run_directory_is_created(tmp_run_dir):
     arts = RunArtifacts.create(tmp_run_dir, "req-1", TS)
     assert arts.run_dir.is_dir()
-    assert arts.run_dir.name == f"{TS}-req-1"
+    assert arts.run_dir.name == f"{TS}_req-1_v001"
 
 
 def test_request_id_is_sanitized(tmp_run_dir):
